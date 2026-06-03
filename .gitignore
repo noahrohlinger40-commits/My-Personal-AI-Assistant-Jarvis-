@@ -1,0 +1,9 @@
+bin/
+obj/
+.dotnet/
+.nuget/
+/.tmpbuild/
+/tools/dotnet/
+data/*.json
+data/*.jsonl
+!data/.gitkeep
