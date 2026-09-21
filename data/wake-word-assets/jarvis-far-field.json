@@ -1,0 +1,37 @@
+{
+  "name": "jarvis-far-field",
+  "displayName": "Jarvis Far Field",
+  "description": "Room-scale wake aliases for conference arrays and beamformed microphones.",
+  "wakePhrases": [
+    "jarvis",
+    "hey jarvis",
+    "okay jarvis",
+    "hello jarvis"
+  ],
+  "aliases": [
+    "jervis",
+    "jarviss",
+    "jarvice",
+    "jarvis wake up"
+  ],
+  "minimumConfidence": 0.34,
+  "sensitivityBias": 0.08,
+  "preferredBeamformingProfile": "far-field-array",
+  "preferredHardwareDspProfile": "vendor-beamforming",
+  "deviceKeywords": [
+    "array",
+    "beam",
+    "far field",
+    "far-field",
+    "respeaker",
+    "smart speaker",
+    "echo",
+    "nest"
+  ],
+  "excludedDeviceKeywords": [
+    "headset",
+    "bluetooth",
+    "desktop",
+    "webcam"
+  ]
+}

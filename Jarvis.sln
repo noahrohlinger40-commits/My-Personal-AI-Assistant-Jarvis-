@@ -1,0 +1,34 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{F33AD3B6-A7FC-4807-80AC-81C83C1E2AEF}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Jarvis.Core", "src\Jarvis.Core\Jarvis.Core.csproj", "{66ABF665-9EB4-45B3-BA63-6E4BB26B35C7}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Jarvis.App", "src\Jarvis.App\Jarvis.App.csproj", "{D4B49CE1-3EF3-4F7C-ACE4-B4095CEDF721}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{66ABF665-9EB4-45B3-BA63-6E4BB26B35C7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{66ABF665-9EB4-45B3-BA63-6E4BB26B35C7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{66ABF665-9EB4-45B3-BA63-6E4BB26B35C7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{66ABF665-9EB4-45B3-BA63-6E4BB26B35C7}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D4B49CE1-3EF3-4F7C-ACE4-B4095CEDF721}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D4B49CE1-3EF3-4F7C-ACE4-B4095CEDF721}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D4B49CE1-3EF3-4F7C-ACE4-B4095CEDF721}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D4B49CE1-3EF3-4F7C-ACE4-B4095CEDF721}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{66ABF665-9EB4-45B3-BA63-6E4BB26B35C7} = {F33AD3B6-A7FC-4807-80AC-81C83C1E2AEF}
+		{D4B49CE1-3EF3-4F7C-ACE4-B4095CEDF721} = {F33AD3B6-A7FC-4807-80AC-81C83C1E2AEF}
+	EndGlobalSection
+EndGlobal

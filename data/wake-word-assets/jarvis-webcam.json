@@ -1,0 +1,36 @@
+{
+  "name": "jarvis-webcam",
+  "displayName": "Jarvis Webcam",
+  "description": "Wake aliases tuned for monitor webcams and integrated conference cameras.",
+  "wakePhrases": [
+    "jarvis",
+    "hey jarvis",
+    "okay jarvis"
+  ],
+  "aliases": [
+    "jervis",
+    "jarviss",
+    "jarvice",
+    "jarvis listen"
+  ],
+  "minimumConfidence": 0.4,
+  "sensitivityBias": 0.04,
+  "preferredBeamformingProfile": "desktop",
+  "preferredHardwareDspProfile": "voice-processing",
+  "deviceKeywords": [
+    "webcam",
+    "brio",
+    "c920",
+    "c922",
+    "c930",
+    "nexigo",
+    "camera",
+    "monitor mic"
+  ],
+  "excludedDeviceKeywords": [
+    "headset",
+    "bluetooth",
+    "conference",
+    "array"
+  ]
+}

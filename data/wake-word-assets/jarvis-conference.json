@@ -1,0 +1,37 @@
+{
+  "name": "jarvis-conference",
+  "displayName": "Jarvis Conference",
+  "description": "Wake aliases for conference speakerphones, meeting docks, and room collaboration devices.",
+  "wakePhrases": [
+    "jarvis",
+    "hey jarvis",
+    "okay jarvis",
+    "hello jarvis"
+  ],
+  "aliases": [
+    "jervis",
+    "jarviss",
+    "jarvice",
+    "jarvis conference"
+  ],
+  "minimumConfidence": 0.33,
+  "sensitivityBias": 0.09,
+  "preferredBeamformingProfile": "conference",
+  "preferredHardwareDspProfile": "conference-array",
+  "deviceKeywords": [
+    "conference",
+    "speakerphone",
+    "poly",
+    "jabra speak",
+    "logi dock",
+    "powerconf",
+    "surface hub",
+    "meeting owl",
+    "dock"
+  ],
+  "excludedDeviceKeywords": [
+    "headset",
+    "bluetooth",
+    "desktop"
+  ]
+}

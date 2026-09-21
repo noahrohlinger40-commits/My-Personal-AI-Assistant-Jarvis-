@@ -1,0 +1,16 @@
+{
+  "dotnetAcquisitionExtension.existingDotnetPath": [
+    {
+      "extensionId": "ms-dotnettools.csharp",
+      "path": "${workspaceFolder}\\tools\\dotnet\\dotnet.exe"
+    },
+    {
+      "extensionId": "ms-dotnettools.csdevkit",
+      "path": "${workspaceFolder}\\tools\\dotnet\\dotnet.exe"
+    },
+    {
+      "extensionId": "ms-dotnettools.vscode-dotnet-runtime",
+      "path": "${workspaceFolder}\\tools\\dotnet\\dotnet.exe"
+    }
+  ]
+}

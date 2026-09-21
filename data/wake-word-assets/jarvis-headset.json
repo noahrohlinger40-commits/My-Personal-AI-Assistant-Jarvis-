@@ -1,0 +1,35 @@
+{
+  "name": "jarvis-headset",
+  "displayName": "Jarvis Headset",
+  "description": "Close-talk wake aliases for boom mics, earbuds, and Bluetooth headsets.",
+  "wakePhrases": [
+    "jarvis",
+    "hey jarvis"
+  ],
+  "aliases": [
+    "jervis",
+    "jarviss",
+    "jarvis listen"
+  ],
+  "minimumConfidence": 0.38,
+  "sensitivityBias": 0.05,
+  "preferredBeamformingProfile": "headset",
+  "preferredHardwareDspProfile": "system-aec",
+  "deviceKeywords": [
+    "headset",
+    "boom",
+    "earbud",
+    "earbuds",
+    "airpods",
+    "plantronics",
+    "steelseries",
+    "astro",
+    "hyperx cloud"
+  ],
+  "excludedDeviceKeywords": [
+    "conference",
+    "speakerphone",
+    "array",
+    "dock"
+  ]
+}

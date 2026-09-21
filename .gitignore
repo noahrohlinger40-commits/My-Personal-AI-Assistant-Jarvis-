@@ -1,0 +1,21 @@
+# Build output
+bin/
+obj/
+artifacts/
+.tmpbuild/
+
+# Vendored toolchain and packages (~148MB, restore with scripts/Ensure-DotNetSdk.ps1)
+.dotnet/
+.nuget/
+/tools/dotnet/
+
+# Logs
+*.log
+
+# Runtime data: memories, transcripts, personal state
+data/*.json
+data/*.jsonl
+!data/.gitkeep
+
+# Editor scaffolding (unconfigured templates)
+.continue/

@@ -1,0 +1,36 @@
+{
+  "name": "jarvis-wireless-headset",
+  "displayName": "Jarvis Wireless Headset",
+  "description": "Wake aliases for Bluetooth earbuds, wireless headsets, and hands-free communication stacks.",
+  "wakePhrases": [
+    "jarvis",
+    "hey jarvis"
+  ],
+  "aliases": [
+    "jervis",
+    "jarviss",
+    "jarvice",
+    "jarvis here"
+  ],
+  "minimumConfidence": 0.36,
+  "sensitivityBias": 0.06,
+  "preferredBeamformingProfile": "headset",
+  "preferredHardwareDspProfile": "system-aec",
+  "deviceKeywords": [
+    "bluetooth",
+    "hands-free",
+    "airpods",
+    "pixel buds",
+    "galaxy buds",
+    "linkbuds",
+    "jlab",
+    "qc ultra",
+    "wh-1000"
+  ],
+  "excludedDeviceKeywords": [
+    "conference",
+    "speakerphone",
+    "array",
+    "dock"
+  ]
+}

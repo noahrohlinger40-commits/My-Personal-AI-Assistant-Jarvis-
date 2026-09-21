@@ -1,0 +1,40 @@
+{
+  "name": "jarvis-desktop",
+  "displayName": "Jarvis Desktop",
+  "description": "Near-field wake aliases for desktop USB microphones and webcams.",
+  "wakePhrases": [
+    "jarvis",
+    "hey jarvis",
+    "okay jarvis"
+  ],
+  "aliases": [
+    "jervis",
+    "jarviss",
+    "jarvice",
+    "jarvus"
+  ],
+  "minimumConfidence": 0.42,
+  "sensitivityBias": 0.03,
+  "preferredBeamformingProfile": "desktop",
+  "preferredHardwareDspProfile": "voice-processing",
+  "deviceKeywords": [
+    "desktop",
+    "usb",
+    "snowball",
+    "yeti",
+    "seiren",
+    "elgato",
+    "wave",
+    "rode",
+    "nt-usb",
+    "hyperx"
+  ],
+  "excludedDeviceKeywords": [
+    "headset",
+    "hands-free",
+    "bluetooth",
+    "conference",
+    "speakerphone",
+    "array"
+  ]
+}

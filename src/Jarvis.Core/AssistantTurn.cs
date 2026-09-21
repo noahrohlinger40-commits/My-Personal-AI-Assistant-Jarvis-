@@ -1,0 +1,40 @@
+namespace Jarvis.Core;
+
+public sealed record AssistantTurn(
+    DateTimeOffset TimestampUtc,
+    string UserInput,
+    string ResponseText,
+    bool ShouldExit = false,
+    string Intent = "",
+    string SessionId = "",
+    bool IsFollowUpQuestion = false,
+    AssistantToolExecution[]? ToolResults = null,
+    AssistantCitation[]? Citations = null,
+    string Privacy = "persistent",
+    InteractionContextSnapshot? Context = null);
+
+public sealed record MemoryNote(
+    string Id,
+    string Content,
+    DateTimeOffset CreatedAtUtc,
+    string Kind = "note",
+    string Category = "",
+    string Source = "manual",
+    string Privacy = "persistent",
+    string[]? Tags = null,
+    InteractionContextSnapshot? Context = null,
+    int ObservationCount = 1,
+    DateTimeOffset? LastObservedAtUtc = null,
+    DateTimeOffset? SummaryWindowStartUtc = null,
+    DateTimeOffset? SummaryWindowEndUtc = null,
+    double ImportanceScore = 0.35d,
+    string RetentionPolicy = "",
+    DateTimeOffset? ExpiresAtUtc = null,
+    bool UserApprovedRetention = false,
+    StructuredMemoryReference[]? Entities = null,
+    DateTimeOffset? ReminderAtUtc = null,
+    string ReminderText = "",
+    string ReminderStatus = "",
+    bool IsForgotten = false,
+    DateTimeOffset? ForgottenAtUtc = null,
+    string ForgottenReason = "");
