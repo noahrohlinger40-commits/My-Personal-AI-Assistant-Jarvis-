@@ -12,6 +12,14 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- Only for System.Windows.Automation (UIAutomationClient), used to read browser pages. -->
+    <UseWPF>true</UseWPF>
   </PropertyGroup>
+
+  <!-- UseWPF drops these from the implicit usings (WPF has its own Path type); the code relies on them. -->
+  <ItemGroup>
+    <Using Include="System.IO" />
+    <Using Include="System.Net.Http" />
+  </ItemGroup>
 
 </Project>

@@ -24,6 +24,7 @@ internal sealed class OpenAiCompatibleStreamingSpeaker : ISpeaker
     private readonly string _instructions;
     private readonly string _responseFormat;
     private readonly string _apiKey;
+    private readonly WindowsSpeechSpeaker _fallbackSpeaker;
     private CancellationTokenSource? _activeSpeechCts;
 
     private OpenAiCompatibleStreamingSpeaker(
@@ -42,6 +43,7 @@ internal sealed class OpenAiCompatibleStreamingSpeaker : ISpeaker
         _instructions = instructions;
         _responseFormat = responseFormat;
         _apiKey = apiKey;
+        _fallbackSpeaker = new WindowsSpeechSpeaker(options);
         _httpClient = new HttpClient
         {
             Timeout = Timeout.InfiniteTimeSpan
@@ -145,6 +147,12 @@ internal sealed class OpenAiCompatibleStreamingSpeaker : ISpeaker
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
         }
+        catch (Exception exception) when (exception is HttpRequestException or InvalidOperationException)
+        {
+            // The speech server is down, still loading its voice, or refused the request, and nothing
+            // has played yet. Say it with the built-in Windows voice rather than staying silent.
+            await _fallbackSpeaker.SpeakAsync(normalized, interruptCts.Token);
+        }
         finally
         {
             lock (_sync)
@@ -176,6 +184,8 @@ internal sealed class OpenAiCompatibleStreamingSpeaker : ISpeaker
         catch
         {
         }
+
+        _fallbackSpeaker.Interrupt();
     }
 
     private HttpRequestMessage BuildRequest(string message)
@@ -222,24 +232,42 @@ internal sealed class OpenAiCompatibleStreamingSpeaker : ISpeaker
 
         var buffer = new byte[8192];
         var outputGain = ResolveOutputGain();
+        // A network read can end halfway through a 16-bit sample. That byte is held back and put in
+        // front of the next read, or every later sample would be scaled with its bytes misaligned.
+        var carriedByte = 0;
 
         try
         {
             while (true)
             {
-                var bytesRead = await audioStream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
+                var bytesRead = await audioStream.ReadAsync(buffer.AsMemory(carriedByte, buffer.Length - carriedByte), cancellationToken);
 
                 if (bytesRead <= 0)
                 {
                     break;
                 }
 
+                var total = carriedByte + bytesRead;
+                var whole = total & ~1;
+
                 if (Math.Abs(outputGain - 1.0) > 0.001)
                 {
-                    ScalePcm16Mono(buffer, bytesRead, outputGain);
+                    ScalePcm16Mono(buffer, whole, outputGain);
                 }
 
-                provider.AddSamples(buffer, 0, bytesRead);
+                // A local voice renders faster than real time; wait for room rather than drop the tail.
+                while (provider.BufferedBytes + whole > provider.BufferLength)
+                {
+                    await Task.Delay(30, cancellationToken);
+                }
+
+                provider.AddSamples(buffer, 0, whole);
+                carriedByte = total - whole;
+
+                if (carriedByte == 1)
+                {
+                    buffer[0] = buffer[total - 1];
+                }
             }
 
             while (provider.BufferedBytes > 0)

@@ -12,6 +12,12 @@ public sealed class JarvisAssistant
     private readonly ToolSafetyService _toolSafety;
     private readonly IUserStateProvider _userStateProvider;
     private readonly ShortTermConversationState _conversationState = new();
+    private static readonly TimeSpan FollowUpCommandLifetime = TimeSpan.FromSeconds(30);
+    private static readonly HashSet<string> FollowUpCancelPhrases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "cancel", "never mind", "nevermind", "forget it", "no", "stop"
+    };
+    private (string Command, DateTimeOffset AskedUtc)? _pendingFollowUpCommand;
 
     public JarvisAssistant(
         JarvisOptions options,
@@ -26,7 +32,10 @@ public sealed class JarvisAssistant
         IAssistantPlanner planner,
         IPendingApprovalStore pendingApprovalStore,
         ToolSafetyService toolSafety,
-        string workspaceRoot)
+        string workspaceRoot,
+        IModelGateway? modelGateway = null,
+        IBrowserPageReader? browserPageReader = null,
+        ILectureRecorder? lectureRecorder = null)
     {
         Options = options;
         _agentStateStore = agentStateStore;
@@ -67,9 +76,15 @@ public sealed class JarvisAssistant
         tools.Add(new ExportTranscriptsTool());
         tools.Add(new ImportTranscriptsTool());
         tools.Add(new WeatherTool());
+        tools.Add(new WriteDownTool(modelGateway));
+        tools.Add(new CalendarTool());
+        tools.Add(new PageTool(browserPageReader, modelGateway));
+        tools.Add(new LectureNotesTool(lectureRecorder, modelGateway));
+        tools.Add(new SleepTool());
         tools.Add(new SystemStateTool());
         tools.Add(new ComputerContextTool());
         tools.Add(new NetworkTool());
+        tools.Add(new VpnTool());
         tools.Add(new ApplicationsTool());
         tools.Add(new OpenApplicationTool());
         tools.Add(new OpenPathTool());
@@ -164,6 +179,7 @@ public sealed class JarvisAssistant
 
     public async Task<AssistantTurn> HandleAsync(string input, CancellationToken cancellationToken)
     {
+        input = CompletePendingFollowUpCommand(input, out var cancelledFollowUp);
         var persistencePlan = MemoryAutomation.PrepareTurn(input);
         var normalizedInput = NormalizeInput(persistencePlan.EffectiveInput);
         ToolResult result;
@@ -177,6 +193,10 @@ public sealed class JarvisAssistant
         if (string.IsNullOrWhiteSpace(normalizedInput))
         {
             result = new ToolResult($"{Options.AssistantName} online. Use `help` to inspect the current command surface.");
+        }
+        else if (cancelledFollowUp)
+        {
+            result = new ToolResult("Okay, never mind.");
         }
         else if (!persistencePlan.PersistAutomaticMemory && LooksLikeRememberCommand(normalizedInput))
         {
@@ -245,6 +265,12 @@ public sealed class JarvisAssistant
                         Detail: toolInput));
 
                     result = await ExecuteToolWithSafetyAsync(tool, normalizedInput, input, cancellationToken);
+
+                    if (!string.IsNullOrWhiteSpace(result.FollowUpCommand))
+                    {
+                        _pendingFollowUpCommand = (result.FollowUpCommand, DateTimeOffset.UtcNow);
+                        isFollowUpQuestion = true;
+                    }
                     toolResults = [BuildToolExecution(tool.Name, toolInput, result, result.ResponseText)];
 
                     if (!LooksLikeSafetyIntervention(result))
@@ -294,7 +320,8 @@ public sealed class JarvisAssistant
             toolResults,
             citations,
             persistencePlan.PrivacyMode,
-            interactionContext);
+            interactionContext,
+            result.SpeakInFull);
 
         _conversationState.AddTurn(turn);
 
@@ -314,6 +341,32 @@ public sealed class JarvisAssistant
         }
 
         return turn;
+    }
+
+    /// <summary>
+    /// When the last reply asked for the rest of a command ("What should I write down?"), this input is
+    /// the answer, so it is appended to that command. Expires so an answer never given cannot swallow a
+    /// later, unrelated request.
+    /// </summary>
+    private string CompletePendingFollowUpCommand(string input, out bool cancelled)
+    {
+        cancelled = false;
+
+        if (_pendingFollowUpCommand is not { } pending || string.IsNullOrWhiteSpace(input))
+        {
+            return input;
+        }
+
+        _pendingFollowUpCommand = null;
+
+        if (DateTimeOffset.UtcNow - pending.AskedUtc > FollowUpCommandLifetime)
+        {
+            return input;
+        }
+
+        var answer = StripWakeAddressing(input.Trim());
+        cancelled = FollowUpCancelPhrases.Contains(answer.Trim(' ', '.', ',', '!'));
+        return cancelled ? input : $"{pending.Command} {answer}";
     }
 
     private string NormalizeInput(string input)
@@ -1275,10 +1328,38 @@ public sealed class JarvisAssistant
             "type into" => new PlannerToolDefinition(
                 tool.Name,
                 tool.Name,
-                "Type text into a named UI element or the focused field.",
-                "Target and text payload expected by the existing tool.",
+                "Type text into an app window at its cursor, opening the app first if it is not running. Use this to write, note, or type anything into Notepad, Word, or another app.",
+                "Format: `<app> <text>`, e.g. `notepad Hello World`. Quote an app name with spaces: `\"sticky notes\" Buy milk`.",
                 "Enter the requested text into the right control.",
                 "Confirmation that text was entered, or a clear failure/approval gate."),
+            "calendar" => new PlannerToolDefinition(
+                tool.Name,
+                tool.Name,
+                "Read or add events in the user's Google Calendar. Use this for schedules, events, appointments, and what is on a given day.",
+                "To read a day: `today`, `tomorrow`, `friday`, or a date. To add: `add <title> :: <date> :: <time> :: <color>`, e.g. `add Dentist :: tomorrow :: 3pm :: red` (time and color optional; colors: red, orange, yellow, green, blue, purple, pink, teal, gray, lavender, sage).",
+                "Answer questions about the user's schedule or put an event on it.",
+                "The day's events, or confirmation of the added event with its date and time."),
+            "lecture notes" => new PlannerToolDefinition(
+                tool.Name,
+                tool.Name,
+                "Record a lecture, class, or meeting (microphone and computer audio) and turn it into notes with a summary, key points, due dates, and a clickable transcript.",
+                "`start <course or meeting name>` (name optional) or `stop`.",
+                "Capture a lecture or meeting and produce notes from it.",
+                "Confirmation that recording started, or the saved notes' summary."),
+            "vpn" => new PlannerToolDefinition(
+                tool.Name,
+                tool.Name,
+                "Turn the user's NordVPN on or off, or say whether it is on.",
+                "`on`, `off`, or `status`.",
+                "Connect, disconnect, or report the VPN.",
+                "Confirmation that the VPN is on or off."),
+            "page" => new PlannerToolDefinition(
+                tool.Name,
+                tool.Name,
+                "Read aloud or summarize the web page open in the user's browser. Use this whenever the user refers to the page, article, site, or tab they are on.",
+                "`read` to read its main text aloud (article only, no menus or ads), `summarize` for a summary, or `summarize <focus>` such as `summarize the reviews`.",
+                "Let the user hear or understand the page they are looking at.",
+                "The page's main text or a short spoken summary of it."),
             "get element text" => new PlannerToolDefinition(
                 tool.Name,
                 tool.Name,

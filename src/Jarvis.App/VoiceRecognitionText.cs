@@ -182,6 +182,20 @@ internal static partial class VoiceRecognitionText
             }
         }
 
+        // Pauses get merged into one utterance, so "so if I say Jarvis open Spotify" is common.
+        // Mid-sentence only an exact wake word counts; fuzzy matching there would catch "Travis" or "Marvin".
+        for (var startIndex = 0; startIndex < tokens.Count; startIndex++)
+        {
+            if (tokens[startIndex].Match != CorrectWakeToken(CanonicalizeForMatching(options.WakePhrase), null))
+            {
+                continue;
+            }
+
+            commandText = NormalizeCommandText(
+                string.Join(' ', tokens.Skip(startIndex + 1).Select(token => token.Original)));
+            return true;
+        }
+
         commandText = string.Empty;
         return false;
     }

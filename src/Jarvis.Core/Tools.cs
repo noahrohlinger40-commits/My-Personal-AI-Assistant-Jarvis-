@@ -1,5 +1,10 @@
 using System.Diagnostics;
+using System.Globalization;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Jarvis.Core;
 
@@ -64,12 +69,22 @@ public sealed class ToolContext
         AutomationCommandExecutor(command, bypassApproval, cancellationToken);
 }
 
+/// <param name="FollowUpCommand">
+/// Set when the reply asks for the rest of a command ("What should I write down?"). The user's next
+/// input is appended to this command instead of being handled on its own.
+/// </param>
+/// <param name="SpeakInFull">
+/// The reply is meant to be heard however long it is (an article, a day's schedule). Otherwise a long
+/// reply is cut to its opening sentences (see <see cref="SpokenReply"/>), so listings stay on screen.
+/// </param>
 public sealed record ToolResult(
     string ResponseText,
     bool ShouldExit = false,
     bool Succeeded = true,
     string VerificationText = "",
-    string SummaryText = "");
+    string SummaryText = "",
+    string FollowUpCommand = "",
+    bool SpeakInFull = false);
 
 public interface IAssistantTool
 {
@@ -656,6 +671,246 @@ public sealed class WeatherTool : IAssistantTool
     }
 }
 
+/// <param name="modelGateway">Condenses rambling dictation into a short note; without it the words are only tidied.</param>
+public sealed class WriteDownTool(IModelGateway? modelGateway = null) : IAssistantTool
+{
+    public string Name => "write down";
+
+    public string Description =>
+        "Make a note: put text on a new Sticky Note. Use this for any request to make, take, or write a note, or to jot or write something down. "
+        + "`write down <what the note should say>`; long dictation is shortened automatically.";
+
+    // Sticky Notes (the OneNote one) has no API. Its "New note" button only responds to keyboard focus, so
+    // the script focuses it, presses Enter, and types only once the new note's editor holds the focus.
+    // Jarvis.Core targets plain net8.0, which has no UI Automation, hence Windows PowerShell.
+    private const string StickyNoteScript = """
+        $ProgressPreference = 'SilentlyContinue'
+        Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+        $A = [System.Windows.Automation.AutomationElement]
+        $Scope = [System.Windows.Automation.TreeScope]
+        function Find($parent, $scope, $name) { $parent.FindFirst($scope, (New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, $name))) }
+        function Press($element, $name) {
+            $element.SetFocus()
+            Start-Sleep -Milliseconds 200
+            if ($A::FocusedElement.Current.Name -ne $name) { "Could not focus the $name button."; exit 1 }
+            $shell.SendKeys('{ENTER}')
+        }
+        $shell = New-Object -ComObject WScript.Shell
+        Start-Process 'shell:AppsFolder\Microsoft.Office.OneNote.MemoryPreview'
+        $button = $null
+        $closedOpenNote = $false
+        for ($i = 0; $i -lt 40 -and -not $button; $i++) {
+            Start-Sleep -Milliseconds 250
+            $window = Find ($A::RootElement) ($Scope::Children) 'Sticky Notes (new)'
+            if (-not $window) { continue }
+            $button = Find $window ($Scope::Descendants) 'New note'
+            # With a note open for editing the panel hides "New note"; its Checkmark button closes the note.
+            $done = if (-not $button -and -not $closedOpenNote) { Find $window ($Scope::Descendants) 'Checkmark' }
+            if ($done) {
+                $null = $shell.AppActivate('Sticky Notes (new)')
+                Start-Sleep -Milliseconds 300
+                Press $done 'Checkmark'
+                $closedOpenNote = $true
+            }
+        }
+        if (-not $button) { 'Sticky Notes did not open.'; exit 1 }
+        $null = $shell.AppActivate('Sticky Notes (new)')
+        Start-Sleep -Milliseconds 300
+        Press $button 'New note'
+        for ($i = 0; $i -lt 20 -and $A::FocusedElement.Current.Name -notlike 'Note editor*'; $i++) { Start-Sleep -Milliseconds 150 }
+        if ($A::FocusedElement.Current.Name -notlike 'Note editor*') { 'The new note did not open for typing.'; exit 1 }
+        $shell.SendKeys(($env:JARVIS_NOTE_TEXT -replace '([+^%~(){}\[\]])', '{$1}'))
+        'ok'
+        """;
+
+    public bool CanHandle(string input) =>
+        input.Equals("write down", StringComparison.OrdinalIgnoreCase) ||
+        input.StartsWith("write down ", StringComparison.OrdinalIgnoreCase);
+
+    public async Task<ToolResult> ExecuteAsync(string input, ToolContext context, CancellationToken cancellationToken)
+    {
+        // Transcription often ends the command with a full stop: "Write this down. Buy milk."
+        var text = ToolInputHelper.GetCommandTail(input, "write down").Trim(' ', '.', ',', ':', ';', '-');
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return new ToolResult("What should I write down?", FollowUpCommand: "write down");
+        }
+
+        text = await StickyNoteText.CondenseAsync(modelGateway, text, DateTime.Now, cancellationToken);
+
+        var startInfo = new ProcessStartInfo("powershell.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true
+        };
+        startInfo.ArgumentList.Add("-NoProfile");
+        startInfo.ArgumentList.Add("-NonInteractive");
+        startInfo.ArgumentList.Add("-EncodedCommand");
+        startInfo.ArgumentList.Add(Convert.ToBase64String(Encoding.Unicode.GetBytes(StickyNoteScript)));
+        // Passed through the environment so no quoting or escaping of the dictated text is needed.
+        startInfo.Environment["JARVIS_NOTE_TEXT"] = text;
+
+        using var process = Process.Start(startInfo)!;
+        var output = (await process.StandardOutput.ReadToEndAsync(cancellationToken)).Trim();
+        await process.WaitForExitAsync(cancellationToken);
+
+        return process.ExitCode == 0
+            ? new ToolResult($"Added a sticky note: \"{text}\"")
+            : new ToolResult($"I couldn't add the sticky note. {output}", Succeeded: false);
+    }
+}
+
+/// <summary>Turns natural dictation ("so um tomorrow I need to grab milk and eggs after class") into a sticky note.</summary>
+public static partial class StickyNoteText
+{
+    private const string Instructions =
+        "You turn dictated speech into a short sticky note. Write the note itself, never a reply to the user.\n"
+        + "- Keep every concrete detail: times, places, amounts, and names or titles exactly as said (\"IT Professions exam\", not \"IT exam\").\n"
+        + "- Drop filler, hesitations, and anything said to the assistant (\"can you\", \"make a note\").\n"
+        + "- At most 15 words on one line, as a terse fragment or command; separate list items with commas.\n"
+        + "- Keep day words exactly as said (today, tonight, tomorrow, Friday) and never add a day or date that was not said.\n"
+        + "- A number is a time only when said as one (\"at 3\", \"3pm\", \"3 o'clock\"); \"homework three\" is \"Homework 3\".\n"
+        + "- Plain text only: no quotes, emoji, or markdown. Reply with the note only.\n"
+        + "Examples:\n"
+        + "Dictated: so um I need to grab paper towels and uh dish soap -> Grab paper towels, dish soap\n"
+        + "Dictated: can you write down that the wifi password for the lab is blue falcon 42 -> Lab wifi password: blue falcon 42";
+
+    public static async Task<string> CondenseAsync(IModelGateway? gateway, string dictated, DateTime now, CancellationToken cancellationToken)
+    {
+        var fallback = Tidy(dictated);
+
+        if (gateway is not { IsAvailable: true })
+        {
+            return fallback;
+        }
+
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(12));
+            var response = await gateway.CompleteAsync(
+                new ChatCompletionRequest(
+                    [
+                        new ChatMessage("system", [ChatMessageContentPart.FromText(Instructions)]),
+                        new ChatMessage("user", [ChatMessageContentPart.FromText($"Dictated: {dictated}")])
+                    ],
+                    Temperature: 0.1),
+                ModelRoute.Fast,
+                timeout.Token);
+
+            return ResolveDays(Accept(response.Content, dictated) ?? fallback, now);
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            // Model offline, slow, or erroring: the note still gets written, just not condensed.
+            return ResolveDays(fallback, now);
+        }
+    }
+
+    /// <summary>
+    /// "tomorrow" means nothing on a note read next week, so day words become dates: "Mon 9/28".
+    /// Done here rather than by the model, which added dates nobody said.
+    /// </summary>
+    public static string ResolveDays(string note, DateTime now)
+    {
+        string Label(DateTime day) => day.ToString("ddd M/d", CultureInfo.InvariantCulture);
+
+        return DayWordRegex().Replace(note, match =>
+        {
+            var word = match.Groups["word"].Value.ToLowerInvariant();
+
+            if (word is "today" or "tonight")
+            {
+                return word == "tonight" ? $"tonight ({Label(now)})" : Label(now);
+            }
+
+            if (word == "tomorrow")
+            {
+                return Label(now.AddDays(1));
+            }
+
+            var target = (int)Enum.GetValues<DayOfWeek>().First(day => day.ToString().StartsWith(word[..3], StringComparison.OrdinalIgnoreCase));
+            var ahead = (target - (int)now.DayOfWeek + 7) % 7;
+            return Label(now.AddDays(ahead == 0 && match.Groups["next"].Success ? 7 : ahead));
+        });
+    }
+
+    /// <summary>The model's note, or null when it is empty, overlong, or unrelated to what was said.</summary>
+    public static string? Accept(string modelOutput, string dictated)
+    {
+        var note = ThinkBlockRegex().Replace(modelOutput ?? string.Empty, string.Empty);
+        note = Regex.Replace(note, @"^\s*(?:sticky\s+)?note\s*:\s*", string.Empty, RegexOptions.IgnoreCase);
+        note = Regex.Replace(note, @"\s+", " ").Trim().Trim('"', '\'', '`', '*').Trim();
+
+        if (note.Length == 0 || note.Length > 200)
+        {
+            return null;
+        }
+
+        // A note sharing no words with the dictation is the model answering instead of condensing.
+        var said = ContentWords(dictated);
+        return ContentWords(note).Any(said.Contains) ? char.ToUpperInvariant(note[0]) + note[1..] : null;
+    }
+
+    public static string Tidy(string dictated)
+    {
+        var note = Regex.Replace(dictated, @"\b(?:um+|uh+|erm|you know)\b,?\s*", string.Empty, RegexOptions.IgnoreCase);
+        note = Regex.Replace(note, @"\s+", " ").Trim(' ', ',', '.');
+        return note.Length == 0 ? dictated.Trim() : char.ToUpperInvariant(note[0]) + note[1..];
+    }
+
+    // Full day names only: abbreviations are ordinary words too ("sun screen", "SAT prep").
+    // "next Friday" said on a Friday is a week out; "this Friday" is today.
+    [GeneratedRegex(@"\b(?:(?<next>next)\s+|(?:this|coming)\s+)?(?<word>today|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b(?!\s*\d{1,2}/\d{1,2})", RegexOptions.IgnoreCase)]
+    private static partial Regex DayWordRegex();
+
+    private static HashSet<string> ContentWords(string text) =>
+        Regex.Matches(text.ToLowerInvariant(), @"[a-z0-9]{3,}").Select(match => match.Value).ToHashSet();
+
+    [GeneratedRegex(@"<think>[\s\S]*?</think>", RegexOptions.IgnoreCase)]
+    private static partial Regex ThinkBlockRegex();
+}
+
+public sealed class SleepTool : IAssistantTool
+{
+    public string Name => "sleep";
+
+    public string Description => "Put the computer to sleep with `sleep`.";
+
+    public bool CanHandle(string input) => input.Equals("sleep", StringComparison.OrdinalIgnoreCase);
+
+    public Task<ToolResult> ExecuteAsync(string input, ToolContext context, CancellationToken cancellationToken)
+    {
+        // Wait so the reply is shown and spoken before the machine goes down.
+        _ = Task.Delay(TimeSpan.FromSeconds(3)).ContinueWith(_ =>
+        {
+            if (IsPwrSuspendAllowed())
+            {
+                SetSuspendState(false, false, false);
+            }
+            else
+            {
+                // Modern Standby laptops have no S3 sleep, and SetSuspendState would hibernate them.
+                // Turning the display off is what the power button does, and it enters standby.
+                PostMessage(new IntPtr(0xFFFF), 0x0112, new IntPtr(0xF170), new IntPtr(2));
+            }
+        }, TaskScheduler.Default);
+
+        return Task.FromResult(new ToolResult("Going to sleep. Goodnight!"));
+    }
+
+    [System.Runtime.InteropServices.DllImport("powrprof.dll")]
+    private static extern bool IsPwrSuspendAllowed();
+
+    [System.Runtime.InteropServices.DllImport("powrprof.dll")]
+    private static extern bool SetSuspendState(bool hibernate, bool forceCritical, bool disableWakeEvent);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+}
+
 public sealed class SystemStateTool : IAssistantTool
 {
     public string Name => "system";
@@ -758,6 +1013,87 @@ public sealed class NetworkTool : IAssistantTool
         }
 
         return ToolInputHelper.GetCommandTail(normalized, "network");
+    }
+}
+
+public sealed class VpnTool : IAssistantTool
+{
+    public string Name => "vpn";
+
+    public string Description => "Turn NordVPN on or off, or check it: `vpn on`, `vpn off`, `vpn status`.";
+
+    public bool CanHandle(string input) => ToolInputHelper.StartsWithCommand(input, "vpn");
+
+    public async Task<ToolResult> ExecuteAsync(string input, ToolContext context, CancellationToken cancellationToken)
+    {
+        var action = ToolInputHelper.GetCommandTail(input, "vpn").Trim().ToLowerInvariant();
+        var isOn = IsConnected();
+
+        if (action is "" or "status")
+        {
+            return new ToolResult(isOn ? "Your VPN is on." : "Your VPN is off.");
+        }
+
+        if (action is not ("on" or "off"))
+        {
+            return new ToolResult("Usage: vpn on, vpn off, or vpn status.", Succeeded: false);
+        }
+
+        var turnOn = action == "on";
+
+        if (isOn == turnOn)
+        {
+            return new ToolResult($"Your VPN is already {action}.");
+        }
+
+        var nordVpn = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "NordVPN", "NordVPN.exe");
+
+        if (!File.Exists(nordVpn))
+        {
+            return new ToolResult($"I couldn't find NordVPN at {nordVpn}.", Succeeded: false);
+        }
+
+        // NordVPN's own command line: it hands -c / -d to the running app and exits.
+        using (Process.Start(nordVpn, turnOn ? "-c" : "-d"))
+        {
+        }
+
+        // Connecting took 1.7 s to 13 s in testing, depending on the server NordVPN picks.
+        for (var waited = 0; waited < 30_000; waited += 250)
+        {
+            await Task.Delay(250, cancellationToken);
+
+            if (IsConnected() == turnOn)
+            {
+                return new ToolResult($"VPN is {action}.");
+            }
+        }
+
+        return new ToolResult(
+            $"I asked NordVPN to turn {action}, but it hasn't yet. Check the NordVPN app.",
+            Succeeded: false);
+    }
+
+    /// <summary>
+    /// Whether internet traffic goes out through a NordVPN adapter. The adapters stay "Up" with an address
+    /// even while disconnected, so their status says nothing; the route Windows picks does.
+    /// </summary>
+    private static bool IsConnected()
+    {
+        try
+        {
+            using var socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            socket.Connect("1.1.1.1", 53); // a UDP connect sends nothing; it only chooses the route
+            var source = ((IPEndPoint)socket.LocalEndPoint!).Address;
+
+            return NetworkInterface.GetAllNetworkInterfaces()
+                .Where(adapter => adapter.Description.Contains("Nord", StringComparison.OrdinalIgnoreCase))
+                .Any(adapter => adapter.GetIPProperties().UnicastAddresses.Any(address => address.Address.Equals(source)));
+        }
+        catch (SocketException)
+        {
+            return false; // no network at all
+        }
     }
 }
 

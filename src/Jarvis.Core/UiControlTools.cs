@@ -187,8 +187,31 @@ public sealed class TypeIntoElementTool : IAssistantTool
         }
 
         var result = await context.DesktopAutomation.TypeIntoElementAsync(target, elementName, text, cancellationToken);
+
+        // "Open Notepad and write hello": start the app when it is not running, then give its window a
+        // few seconds to appear. Limited to exact app names so a stray word never launches something.
+        if (result.StartsWith("Window matching", StringComparison.OrdinalIgnoreCase)
+            && JarvisCommandCatalog.KnownApplicationNameCheck?.Invoke(target) == true)
+        {
+            var opened = await context.DesktopAutomation.OpenApplicationAsync(target, cancellationToken);
+
+            for (var attempt = 0; attempt < 20 && result.StartsWith("Window matching", StringComparison.OrdinalIgnoreCase); attempt++)
+            {
+                // The first wait is longer: a window can appear before the app has loaded its document,
+                // and keys typed then are lost (Notepad saved an empty file in testing).
+                // ponytail: fixed settle time; poll the app's readiness if a slow app still drops keys.
+                await Task.Delay(attempt == 0 ? 1500 : 500, cancellationToken);
+                result = await context.DesktopAutomation.TypeIntoElementAsync(target, elementName, text, cancellationToken);
+            }
+
+            if (result.StartsWith("Window matching", StringComparison.OrdinalIgnoreCase))
+            {
+                result = $"Unable to type into '{target}': its window did not appear. {opened}";
+            }
+        }
+
         var success = !UiCommandParsing.LooksLikeFailure(result);
-        return new ToolResult(result, VerificationText: result, SummaryText: success ? "Typed text." : "Type failed.");
+        return new ToolResult(result, Succeeded: success, VerificationText: result, SummaryText: success ? "Typed text." : "Type failed.");
     }
 }
 

@@ -66,6 +66,7 @@ internal sealed partial class JarvisMainForm : Form
     private bool _isAssistantHistoryStreamActive;
     private bool _isAssistantResponseStreaming;
     private bool _isAwaitingFollowUpInput;
+    private DateTimeOffset _followUpAnswerDeadlineUtc = DateTimeOffset.MinValue;
     private TransparentTableLayoutPanel _mainColumnLayout = null!;
     private Button _micToggleButton = null!;
     private Label _modeStatusLabel = null!;

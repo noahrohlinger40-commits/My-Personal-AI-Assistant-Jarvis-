@@ -73,7 +73,7 @@ internal static partial class Win32UiAutomation
 
         if (sent != inputs.Count)
         {
-            error = $"Windows only dispatched {sent} of {inputs.Count} text input events.";
+            error = $"Unable to finish typing: Windows only dispatched {sent} of {inputs.Count} text input events.";
             return false;
         }
 

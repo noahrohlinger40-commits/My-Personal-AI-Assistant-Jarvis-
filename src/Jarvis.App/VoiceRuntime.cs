@@ -126,6 +126,11 @@ internal interface IVoiceRuntime : IDisposable
 
     void SetPlaybackState(bool isSpeaking);
 
+    /// <summary>Opens the listening window as if the wake word was just heard, for answering a question.</summary>
+    void ListenForFollowUp()
+    {
+    }
+
     Task StartAsync(CancellationToken cancellationToken);
 
     Task StopAsync(CancellationToken cancellationToken);
@@ -556,7 +561,7 @@ internal sealed class SpeechRecognitionVoiceRuntime : IVoiceRuntime
 
     /// <summary>
     /// Points the recognizer at the configured microphone with automatic gain. Falls back to the
-    /// Windows default device (previous behavior) if the configured one cannot be opened.
+    /// Windows default device if the configured one cannot be opened.
     /// </summary>
     private string ConfigureAudioInput()
     {
@@ -720,6 +725,14 @@ internal sealed class SpeechRecognitionVoiceRuntime : IVoiceRuntime
 
         PublishSignal(0, 0, false, false);
         PublishStatus(isArmed: false, statusText: statusText, isAvailable: eventArgs.Error is null);
+    }
+
+    public void ListenForFollowUp()
+    {
+        if (_isListening)
+        {
+            ArmWakeWindow();
+        }
     }
 
     private void ArmWakeWindow()

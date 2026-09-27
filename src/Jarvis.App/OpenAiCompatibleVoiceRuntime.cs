@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 using Jarvis.Core;
 using NAudio.Wave;
 
@@ -29,6 +30,7 @@ internal sealed class OpenAiCompatibleVoiceRuntime : IVoiceRuntime
     private System.Threading.Timer? _wakeWindowTimer;
     private DateTimeOffset _lastVoiceDetectedUtc;
     private int _preRollBytes;
+    private int _pendingUtterances;
     private bool _isListening;
     private bool _isArmed;
     private double _noiseFloor;
@@ -370,8 +372,21 @@ internal sealed class OpenAiCompatibleVoiceRuntime : IVoiceRuntime
 
     private async Task ProcessUtteranceAsync(byte[] utteranceBytes)
     {
+        try
+        {
+            await TranscribeUtteranceAsync(utteranceBytes);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _pendingUtterances);
+        }
+    }
+
+    private async Task TranscribeUtteranceAsync(byte[] utteranceBytes)
+    {
         var lifetimeToken = _lifetimeCts?.Token ?? CancellationToken.None;
-        var wakeHint = TryDetectWakeWord(utteranceBytes);
+        // The built-in wake check takes up to a few seconds, so run it alongside transcription, not before it.
+        var wakeHintTask = Task.Run(() => TryDetectWakeWord(utteranceBytes));
 
         try
         {
@@ -385,7 +400,7 @@ internal sealed class OpenAiCompatibleVoiceRuntime : IVoiceRuntime
         try
         {
             var transcript = await _client.TranscribeAsync(utteranceBytes, _options.SpeechRecognitionSampleRateHz, lifetimeToken);
-            HandleRecognizedText(transcript.Text.Trim(), transcript.Confidence, wakeHint);
+            await HandleRecognizedTextAsync(transcript.Text.Trim(), transcript.Confidence, wakeHintTask);
         }
         catch (OperationCanceledException)
         {
@@ -413,10 +428,10 @@ internal sealed class OpenAiCompatibleVoiceRuntime : IVoiceRuntime
     private bool IsLocalSpeechEndpoint() =>
         Uri.TryCreate(_options.SpeechRecognitionBaseUrl, UriKind.Absolute, out var uri) && uri.IsLoopback;
 
-    private void HandleRecognizedText(
+    private async Task HandleRecognizedTextAsync(
         string recognizedText,
-        double? recognitionConfidence = null,
-        WakeWordDetectionResult? wakeHint = null)
+        double? recognitionConfidence,
+        Task<WakeWordDetectionResult?> wakeHintTask)
     {
         var rawRecognizedText = VoiceRecognitionText.NormalizeTranscript(recognizedText, _options, applyPersonalCorrections: false);
         recognizedText = VoiceRecognitionText.ApplyPersonalCorrections(rawRecognizedText, _options);
@@ -455,17 +470,28 @@ internal sealed class OpenAiCompatibleVoiceRuntime : IVoiceRuntime
             return;
         }
 
-        if (wakeHint is { IsDetected: true })
+        // Awaited only here: when the transcript already carried the wake word, the slower built-in
+        // check (up to 2.5 s) has nothing to add, so the command goes out without waiting for it.
+        if (await wakeHintTask is { IsDetected: true })
         {
             // The built-in recognizer only vouches that the wake word was said. When the transcription
             // service also produced text, that text is far more accurate than the built-in recognizer's
             // own guess at the command, so prefer it and fall back to the guess only if there is none.
             if (!string.IsNullOrWhiteSpace(recognizedText))
             {
+                // A leading "Harvest," is a mishearing of the wake word the hint heard. With no such word,
+                // the hint is a false positive on ordinary speech, and passing it on would send the whole
+                // conversation to the model as a command.
+                var command = VoiceRecognitionText.StripLeadingVocative(recognizedText);
+
+                if (command == recognizedText)
+                {
+                    return;
+                }
+
                 ResetToIdle();
-                // The wake word is already confirmed, so a leading "Jokes," is a mishearing of it.
                 PublishRecognizedCommand(
-                    JarvisCommandCatalog.NormalizeVoiceDirective(VoiceRecognitionText.StripLeadingVocative(recognizedText)),
+                    JarvisCommandCatalog.NormalizeVoiceDirective(command),
                     rawRecognizedText,
                     recognitionConfidence,
                     minimumConfidence);
@@ -503,6 +529,14 @@ internal sealed class OpenAiCompatibleVoiceRuntime : IVoiceRuntime
             minimumConfidence);
     }
 
+    public void ListenForFollowUp()
+    {
+        if (_isListening)
+        {
+            ArmWakeWindow();
+        }
+    }
+
     private void ArmWakeWindow()
     {
         lock (_sync)
@@ -527,6 +561,14 @@ internal sealed class OpenAiCompatibleVoiceRuntime : IVoiceRuntime
         {
             if (!_isArmed)
             {
+                return;
+            }
+
+            // The command may already be spoken and waiting on transcription, which takes seconds on a
+            // CPU. Closing the window now would drop it, so wait until that speech has been handled.
+            if (_activeSpeechBuffer is not null || Volatile.Read(ref _pendingUtterances) > 0)
+            {
+                _wakeWindowTimer?.Change(TimeSpan.FromSeconds(1), Timeout.InfiniteTimeSpan);
                 return;
             }
 
@@ -651,6 +693,8 @@ internal sealed class OpenAiCompatibleVoiceRuntime : IVoiceRuntime
             return null;
         }
 
+        // Every returned utterance is handed to ProcessUtteranceAsync, which decrements this.
+        Interlocked.Increment(ref _pendingUtterances);
         return utterance;
     }
 
@@ -800,7 +844,7 @@ internal sealed class OpenAiCompatibleVoiceRuntime : IVoiceRuntime
         }
     }
 
-    private static string ResolveApiKey(JarvisOptions options) =>
+    internal static string ResolveApiKey(JarvisOptions options) =>
         ApiKeyResolver.Resolve(
             options.SpeechRecognitionApiKey,
             options.SpeechRecognitionApiKeyCredentialTarget,
@@ -913,6 +957,25 @@ internal sealed class OpenAiCompatibleTranscriptionClient
 
     public async Task<VoiceTranscriptResult> TranscribeAsync(byte[] pcm16MonoAudio, int sampleRateHz, CancellationToken cancellationToken)
     {
+        var body = await SendAsync(pcm16MonoAudio, sampleRateHz, "text", cancellationToken);
+        return new VoiceTranscriptResult(body.Trim());
+    }
+
+    /// <summary>The transcript as timed lines, each at its offset into the audio.</summary>
+    public async Task<IReadOnlyList<TranscriptLine>> TranscribeLinesAsync(byte[] pcm16MonoAudio, int sampleRateHz, CancellationToken cancellationToken)
+    {
+        using var json = JsonDocument.Parse(await SendAsync(pcm16MonoAudio, sampleRateHz, "verbose_json", cancellationToken));
+
+        return json.RootElement.GetProperty("segments").EnumerateArray()
+            .Select(segment => new TranscriptLine(
+                TimeSpan.FromSeconds(segment.GetProperty("start").GetDouble()),
+                segment.GetProperty("text").GetString()?.Trim() ?? string.Empty))
+            .Where(line => line.Text.Length > 0)
+            .ToList();
+    }
+
+    private async Task<string> SendAsync(byte[] pcm16MonoAudio, int sampleRateHz, string responseFormat, CancellationToken cancellationToken)
+    {
         using var form = new MultipartFormDataContent();
 
         var wavBytes = Pcm16WavWriter.WrapPcm16Mono(pcm16MonoAudio, sampleRateHz);
@@ -921,7 +984,7 @@ internal sealed class OpenAiCompatibleTranscriptionClient
 
         form.Add(audioContent, "file", "speech.wav");
         form.Add(new StringContent(_model), "model");
-        form.Add(new StringContent("text"), "response_format");
+        form.Add(new StringContent(responseFormat), "response_format");
 
         if (!string.IsNullOrWhiteSpace(_language))
         {
@@ -952,7 +1015,7 @@ internal sealed class OpenAiCompatibleTranscriptionClient
                 $"speech API HTTP {(int)response.StatusCode}: {TrimForError(body)}");
         }
 
-        return new VoiceTranscriptResult(body.Trim());
+        return body;
     }
 
     private static string BuildEndpoint(string baseUrl)

@@ -193,6 +193,15 @@ public sealed record JarvisOptions
 
     public int PlannerWebResearchMaxResults { get; init; } = 5;
 
+    /// <summary>The OAuth client JSON downloaded from Google Cloud Console (Desktop app type).</summary>
+    public string GoogleCalendarClientSecretPath { get; init; } = "data/google-client-secret.json";
+
+    /// <summary>
+    /// The Obsidian vault lecture and meeting notes go to. Outside OneDrive by default: recordings are large,
+    /// and the notes sync to the phone through Obsidian instead.
+    /// </summary>
+    public string LectureNotesFolder { get; init; } = @"%USERPROFILE%\Lecture Notes";
+
     public string VisualCaptureDirectory { get; init; } = Path.Combine("data", "captures");
 
     public int VisualCaptureRetentionCount { get; init; } = 24;
@@ -231,7 +240,7 @@ public sealed record JarvisOptions
 
     public string UserStateFilePath { get; init; } = Path.Combine("data", "user-state.json");
 
-    // New speaker volume features
+    // Speaker volume and ambient-noise settings.
     public bool WhisperModeEnabled { get; init; } = false;
     public double SpeakerVolumeMultiplier { get; init; } = 1.0;
     public bool RoomVolumeAwarenessEnabled { get; init; } = true;

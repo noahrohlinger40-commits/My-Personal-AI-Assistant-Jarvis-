@@ -62,7 +62,10 @@ internal static class AppBootstrapper
             planner,
             pendingApprovalStore,
             toolSafety,
-            workspaceRoot);
+            workspaceRoot,
+            modelGateway,
+            new UiaBrowserPageReader(),
+            new LectureRecorder(options));
         await assistant.InitializeAsync(cancellationToken);
         return assistant;
     }

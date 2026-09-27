@@ -205,6 +205,7 @@ internal sealed partial class JarvisMainForm
         _isSubmitting = true;
         _isAwaitingFollowUpInput = false;
         _awaitingFollowUpDetail = string.Empty;
+        _followUpAnswerDeadlineUtc = DateTimeOffset.MinValue;
         _lastAssistantKind = AssistantActivityKind.Planning;
         _lastAssistantDetail = "Planning the next response.";
         _currentMissionObjective = DescribeMissionObjective(input);
@@ -251,9 +252,13 @@ internal sealed partial class JarvisMainForm
                 await RefreshClarificationUiAsync();
             }
 
-            if (_pendingApproval is null && ShouldSpeak(renderedResponse))
+            if (_pendingApproval is not null)
             {
-                await TrySpeakAsync(renderedResponse, _cancellationTokenSource.Token);
+                await TrySpeakAsync("I need your approval before I continue. It's on screen.", _cancellationTokenSource.Token);
+            }
+            else if (SpokenReply.Build(renderedResponse, turn.SpeakInFull) is { Length: > 0 } spoken)
+            {
+                await TrySpeakAsync(spoken, _cancellationTokenSource.Token);
             }
 
             if (turn.ShouldExit)
@@ -295,6 +300,15 @@ internal sealed partial class JarvisMainForm
             }
             RecomputeSurfaceState();
             _inputBox.Focus();
+
+            // After speaking a question or approval request, accept the answer without another wake word.
+            if (source == "VOICE"
+                && (_isAwaitingFollowUpInput || _pendingApproval is not null)
+                && !_cancellationTokenSource.IsCancellationRequested)
+            {
+                _currentVoiceRuntime.ListenForFollowUp();
+                _followUpAnswerDeadlineUtc = DateTimeOffset.UtcNow.AddSeconds(30);
+            }
 
             var queuedVoiceDirective = _queuedVoiceDirective;
             _queuedVoiceDirective = null;
@@ -366,7 +380,11 @@ internal sealed partial class JarvisMainForm
 
         try
         {
-            foreach (var chunk in EnumerateResponseChunks(message))
+            // Speech waits for this display to finish, and word-by-word animation of a whole article would
+            // take about a minute, so long replies appear at once.
+            var chunks = message.Length <= 600 ? EnumerateResponseChunks(message) : [message];
+
+            foreach (var chunk in chunks)
             {
                 token.ThrowIfCancellationRequested();
                 _liveResponseBox.AppendText(chunk);
@@ -1550,7 +1568,9 @@ internal sealed partial class JarvisMainForm
             return;
         }
 
-        await ProcessPromptAsync(eventArgs.Text, "VOICE", clearInput: false);
+        // An answer to Jarvis's question is dictation, not a command: "Spotify" must not become "open app Spotify".
+        var isAnswer = DateTimeOffset.UtcNow < _followUpAnswerDeadlineUtc;
+        await ProcessPromptAsync(isAnswer ? eventArgs.RawText : eventArgs.Text, "VOICE", clearInput: false);
     }
 
     private void OnVoiceActivationRequested(object? sender, VoiceActivationRequestedEventArgs eventArgs)
@@ -2516,13 +2536,6 @@ internal sealed partial class JarvisMainForm
         }
 
         return false;
-    }
-
-    private static bool ShouldSpeak(string message)
-    {
-        return !string.IsNullOrWhiteSpace(message)
-            && message.Length <= 220
-            && !message.Contains(Environment.NewLine, StringComparison.Ordinal);
     }
 
     private string BuildDisplayResponse(AssistantTurn turn, PendingApprovalAction? pendingApproval)

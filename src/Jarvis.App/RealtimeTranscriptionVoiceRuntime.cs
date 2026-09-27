@@ -436,6 +436,14 @@ internal sealed class RealtimeTranscriptionVoiceRuntime : IVoiceRuntime
             minimumConfidence);
     }
 
+    public void ListenForFollowUp()
+    {
+        if (_isListening)
+        {
+            ArmWakeWindow();
+        }
+    }
+
     private void ArmWakeWindow()
     {
         lock (_sync)

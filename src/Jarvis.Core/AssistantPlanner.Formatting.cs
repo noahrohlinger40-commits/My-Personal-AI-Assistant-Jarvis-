@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Jarvis.Core;
 
@@ -59,9 +60,6 @@ internal sealed partial class StructuredAssistantPlanner
 
     private string BuildSystemPrompt(AssistantPlanningRequest request)
     {
-        var toolLines = request.Tools
-            .Select(tool => $"- {tool.ApiName}: {tool.Description} (internal command: {tool.CommandName})")
-            .ToArray();
         var persona = AssistantPersonaConfiguration.Resolve(_options);
 
         var lines = new List<string>
@@ -79,9 +77,8 @@ internal sealed partial class StructuredAssistantPlanner
             "If a request is ambiguous, ask a concise follow-up question instead of guessing.",
             "If a tool reports approval is required, do not try to bypass it with another tool or a rephrased shell command. Explain the planned change and wait for the user's approval.",
             "Protected system paths and dangerous shell operations are hard-blocked. Do not attempt to work around those restrictions.",
-            "Keep the final answer concise and proactive. Summarize what happened rather than dumping raw tool output.",
-            "Available tools:",
-            string.Join(Environment.NewLine, toolLines)
+            // Tools are sent as native definitions; repeating them here can exceed local-model context limits.
+            "Keep the final answer concise and proactive. Summarize what happened rather than dumping raw tool output."
         };
 
         if (!request.ShellExecutionEnabled)
@@ -2021,8 +2018,8 @@ internal sealed partial class StructuredAssistantPlanner
             return true;
         }
 
-        if (value.Contains("time", StringComparison.OrdinalIgnoreCase)
-            || value.Contains("date", StringComparison.OrdinalIgnoreCase))
+        // Require a time or date question to avoid matching unrelated phrases such as "every time".
+        if (Regex.IsMatch(value, @"\bwhat(?:'s| is)?(?: the)? (?:time|date|day)\b|\btime is it\b|\bcurrent (?:time|date)\b|\btoday'?s date\b"))
         {
             toolName = "time";
             return true;
@@ -2634,7 +2631,10 @@ internal sealed partial class StructuredAssistantPlanner
 
         return toolHint switch
         {
-            "weather" => normalized.Replace("weather", string.Empty, StringComparison.OrdinalIgnoreCase).Trim(' ', ',', ':', ';', '-'),
+            // Only "... in/for <place>" names a place; anything else uses the default location.
+            "weather" => Regex.Match(normalized, @"\b(?:in|for)\s+(?<place>[\p{L}][\p{L} ,.'-]*?)\s*(?:\b(?:today|tomorrow|tonight|right now|now)\b)?[?.!]*$", RegexOptions.IgnoreCase) is { Success: true } place
+                ? place.Groups["place"].Value.Trim(' ', ',', '.')
+                : string.Empty,
             "email" or "tasks" => string.Empty,
             "open app" => ExtractDirectToolInput(normalized, "open app", "launch app", "launch", "start app"),
             "focus app" => ExtractDirectToolInput(normalized, "focus app", "focus window", "switch to", "activate app", "bring to front"),

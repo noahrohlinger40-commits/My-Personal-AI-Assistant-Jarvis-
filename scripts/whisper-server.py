@@ -1,7 +1,7 @@
-"""Local, OpenAI-compatible speech-to-text server for Jarvis.
+"""Local, OpenAI-compatible speech server for Jarvis.
 
-Serves POST /v1/audio/transcriptions (the request shape Jarvis already sends) using
-faster-whisper on the CPU, so speech recognition needs no API key and no cloud service.
+Serves POST /v1/audio/transcriptions (faster-whisper) and POST /v1/audio/speech (Kokoro), the
+request shapes Jarvis already sends, all on the CPU, so voice needs no API key and no cloud service.
 
 Settings come from environment variables so the launcher can tune them without edits:
   JARVIS_WHISPER_MODEL    model name or path        (default: small.en)
@@ -14,6 +14,7 @@ Settings come from environment variables so the launcher can tune them without e
   JARVIS_WHISPER_CLIENT_PROMPT  set to 1 to pass the app's prompt to Whisper (default: off, see below)
   JARVIS_WHISPER_SAVE_DIR save every upload here for debugging (default: off)
   JARVIS_WHISPER_LOG      log file to write to      (default: console)
+  JARVIS_TTS_VOICE        Kokoro voice used when the app asks for one Kokoro lacks (default: af_heart)
   JARVIS_PARENT_PID       exit when this process exits (set by Jarvis so the server never outlives it)
 """
 
@@ -21,14 +22,16 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import sys
 import threading
 import time
+import wave
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from faster_whisper import WhisperModel
 from faster_whisper.utils import download_model
 
@@ -58,11 +61,28 @@ ENGLISH_ONLY = MODEL_NAME.endswith(".en")
 USE_CLIENT_PROMPT = os.environ.get("JARVIS_WHISPER_CLIENT_PROMPT") == "1"
 VOCABULARY_HINT = os.environ.get("JARVIS_WHISPER_HINT", "")
 SAVE_DIR = os.environ.get("JARVIS_WHISPER_SAVE_DIR")
+TTS_VOICE = os.environ.get("JARVIS_TTS_VOICE", "af_heart")
+# fp32 on purpose: on a laptop CPU the int8 Kokoro build ran about 4x slower than real time.
+TTS_MODEL_DIR = Path(MODEL_DIR) / "kokoro"
+# Kokoro trims the silence off the end of each sentence it renders, and sentences are rendered one at
+# a time, so without this they run into each other. 0.25 s is Kokoro's own gap between sentences.
+SENTENCE_PAUSE = bytes(2 * int(0.25 * 24000))
 
-app = FastAPI(title="Jarvis local Whisper server")
+# Whisper learned these from video captions and emits them for noise or breathing. Nobody says them
+# to an assistant, so a segment that is only one of these is dropped. A lone "you" is the same thing
+# on near-silence; it showed up at the start of a lecture recording's second piece.
+CAPTION_HALLUCINATIONS = {
+    "thanks for watching", "thank you for watching", "thanks for watching and see you next time",
+    "please subscribe", "like and subscribe", "subtitles by the amaraorg community", "you",
+}
+
+app = FastAPI(title="Jarvis local speech server")
 _model: WhisperModel | None = None
+_tts = None  # Kokoro, loaded after Whisper so speech recognition is ready first
+_tts_error = "The speech voice is still loading."
 # One inference at a time keeps CPU use predictable while the local LLM is also running.
 _inference_lock = threading.Lock()
+_tts_lock = threading.Lock()
 
 
 def model_is_usable(directory: Path) -> bool:
@@ -108,7 +128,8 @@ def load_model() -> WhisperModel:
     return model
 
 
-def transcribe_bytes(audio: bytes, language: str | None, prompt: str | None) -> tuple[str, float]:
+def transcribe_bytes(audio: bytes, language: str | None, prompt: str | None) -> tuple[str, list[dict], float]:
+    """The transcript, its timed segments ({start, end, text}, in seconds), and how long it took."""
     assert _model is not None
     started = time.perf_counter()
 
@@ -133,14 +154,85 @@ def transcribe_bytes(audio: bytes, language: str | None, prompt: str | None) -> 
             condition_on_previous_text=False,
             no_speech_threshold=0.6,
         )
-        text = " ".join(segment.text.strip() for segment in segments).strip()
+        # Checked per segment: a long recording can have "Thanks for watching" in a quiet stretch.
+        timed = [
+            {"start": round(segment.start, 2), "end": round(segment.end, 2), "text": segment.text.strip()}
+            for segment in segments
+            if re.sub(r"[^a-z ]", "", segment.text.lower()).strip() not in CAPTION_HALLUCINATIONS
+        ]
 
-    return text, time.perf_counter() - started
+    text = " ".join(segment["text"] for segment in timed).strip()
+    return text, timed, time.perf_counter() - started
+
+
+def load_tts() -> None:
+    """Load Kokoro in the background. Until it is ready (or if it is missing), /audio/speech answers
+    503 and the app speaks with the built-in Windows voice instead."""
+    global _tts, _tts_error
+    try:
+        from kokoro_onnx import Kokoro
+
+        started = time.perf_counter()
+        tts = Kokoro(str(TTS_MODEL_DIR / "kokoro-v1.0.onnx"), str(TTS_MODEL_DIR / "voices-v1.0.bin"))
+        tts.create("Ready.", voice=TTS_VOICE, lang="en-gb")  # the first synthesis is the slow one
+        _tts = tts
+        print(f"[tts] loaded Kokoro in {time.perf_counter() - started:.1f}s (voice={TTS_VOICE})", flush=True)
+    except Exception as exc:
+        _tts_error = f"Kokoro is not available ({exc}). Run scripts\\Setup-LocalSpeech.ps1."
+        print(f"[tts] {_tts_error}", flush=True)
+
+
+def speakable_sentences(text: str) -> list[str]:
+    # Emoji and markdown symbols come out as noise or silence, so keep only speakable characters.
+    text = re.sub(r"[^\w\s.,!?;:'\"()%$&-]", " ", text)
+    return [part.strip() for part in re.split(r"(?<=[.!?;:])\s+", text) if re.search(r"\w", part)]
+
+
+def synthesize_pcm(sentence: str, voice: str, speed: float) -> bytes:
+    with _tts_lock:
+        samples, _rate = _tts.create(sentence, voice=voice, speed=speed, lang="en-gb" if voice[:1] == "b" else "en-us")
+    return (samples.clip(-1, 1) * 32767).astype("<i2").tobytes()
+
+
+@app.post("/v1/audio/speech")
+def create_speech(payload: dict = Body(...)):
+    """OpenAI-shaped text-to-speech. Returns 24 kHz 16-bit mono PCM, streamed one sentence at a time
+    so playback starts after the first sentence instead of after the whole reply."""
+    if _tts is None:
+        raise HTTPException(status_code=503, detail=_tts_error)
+
+    sentences = speakable_sentences(str(payload.get("input", "")))
+
+    if not sentences:
+        raise HTTPException(status_code=400, detail="Nothing to speak.")
+
+    voice = str(payload.get("voice") or "")
+    voice = voice if voice in _tts.get_voices() else TTS_VOICE
+    speed = min(max(float(payload.get("speed") or 1.0), 0.5), 2.0)
+
+    if payload.get("response_format") == "wav":
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(24000)
+            output.writeframes(SENTENCE_PAUSE.join(synthesize_pcm(s, voice, speed) for s in sentences))
+        return Response(buffer.getvalue(), media_type="audio/wav")
+
+    def stream():
+        started = time.perf_counter()
+        for index, sentence in enumerate(sentences):
+            if index:
+                yield SENTENCE_PAUSE
+            yield synthesize_pcm(sentence, voice, speed)
+        print(f"[tts] {len(sentences)} sentence(s) -> {time.perf_counter() - started:.2f}s", flush=True)
+
+    return StreamingResponse(stream(), media_type="audio/pcm")
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "model": MODEL_NAME}
+    return {"status": "ok", "model": MODEL_NAME, "tts": "ready" if _tts is not None else _tts_error}
 
 
 @app.get("/v1/models")
@@ -166,7 +258,7 @@ async def create_transcription(
         (Path(SAVE_DIR) / f"{time.strftime('%Y%m%d-%H%M%S')}-{int(time.time() * 1000) % 1000:03d}.wav").write_bytes(audio)
 
     try:
-        text, seconds = transcribe_bytes(audio, language, prompt)
+        text, timed, seconds = transcribe_bytes(audio, language, prompt)
     except Exception as exc:  # decoding errors should surface as a clear HTTP error, not a crash
         raise HTTPException(status_code=422, detail=f"Could not transcribe audio: {exc}") from exc
 
@@ -174,6 +266,9 @@ async def create_transcription(
 
     if response_format == "text":
         return PlainTextResponse(text)
+
+    if response_format == "verbose_json":  # OpenAI's shape; lecture notes use the segment times
+        return JSONResponse({"text": text, "segments": timed})
 
     return JSONResponse({"text": text})
 
@@ -231,6 +326,7 @@ def main() -> int:
     except Exception as exc:
         print(f"[whisper] warm-up skipped: {exc}", flush=True)
 
+    threading.Thread(target=load_tts, daemon=True).start()
     print(f"[whisper] ready on http://{HOST}:{PORT}/v1", flush=True)
     uvicorn.run(app, host=HOST, port=PORT, log_level="warning")
     return 0

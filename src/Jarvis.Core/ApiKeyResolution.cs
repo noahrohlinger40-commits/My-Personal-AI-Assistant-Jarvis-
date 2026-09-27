@@ -65,6 +65,40 @@ internal static class WindowsCredentialStore
         }
     }
 
+    public static bool TryWriteGenericSecret(string target, string secret)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
+        var bytes = Encoding.Unicode.GetBytes(secret);
+        var blob = Marshal.AllocHGlobal(bytes.Length);
+
+        try
+        {
+            Marshal.Copy(bytes, 0, blob, bytes.Length);
+            var credential = new Credential
+            {
+                Type = CredTypeGeneric,
+                TargetName = target,
+                CredentialBlobSize = bytes.Length,
+                CredentialBlob = blob,
+                Persist = 2, // CRED_PERSIST_LOCAL_MACHINE: this user, this PC, kept across restarts
+                UserName = Environment.UserName
+            };
+
+            return CredWriteW(ref credential, 0);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(blob);
+        }
+    }
+
+    [DllImport("advapi32.dll", EntryPoint = "CredWriteW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CredWriteW(ref Credential credential, int flags);
+
     [DllImport("advapi32.dll", EntryPoint = "CredReadW", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CredReadW(string target, int type, int reservedFlag, out IntPtr credentialPtr);
 

@@ -159,26 +159,28 @@ internal static partial class Win32UiAutomation
 
     public static Task<string> TypeIntoElementAsync(string targetApp, string elementName, string text)
     {
+        // Without a named field, type at the cursor like a keyboard. WM_SETTEXT below replaces the
+        // control's entire contents (a whole Notepad document), and when it finds no edit control it
+        // renames the window instead, reporting success either way.
+        if (string.IsNullOrWhiteSpace(elementName))
+        {
+            return SendTextAsync(targetApp, text);
+        }
+
         if (!TryResolveWindow(targetApp, out var window))
         {
             return Task.FromResult($"Window matching '{targetApp}' was not found.");
         }
 
         _ = TryBringWindowToFront(window.Handle);
-        var targetHandle = FindBestTextHandle(window.Handle);
-        var targetDescription = DescribeWindow(window);
 
-        if (!string.IsNullOrWhiteSpace(elementName))
+        if (!TryResolveElement(window.Handle, elementName, out var element))
         {
-            if (!TryResolveElement(window.Handle, elementName, out var element))
-            {
-                return Task.FromResult($"Element matching '{elementName.Trim()}' was not found in '{DescribeWindow(window)}'.");
-            }
-
-            targetHandle = element.Handle;
-            targetDescription = DescribeElement(element);
+            return Task.FromResult($"Element matching '{elementName.Trim()}' was not found in '{DescribeWindow(window)}'.");
         }
 
+        var targetHandle = element.Handle;
+        var targetDescription = DescribeElement(element);
         var textHandle = Marshal.StringToHGlobalUni(text);
 
         try
@@ -190,10 +192,7 @@ internal static partial class Win32UiAutomation
             Marshal.FreeHGlobal(textHandle);
         }
 
-        return Task.FromResult(
-            string.IsNullOrWhiteSpace(elementName)
-                ? $"Typed {DescribeTextLength(text)} into '{DescribeWindow(window)}'."
-                : $"Typed {DescribeTextLength(text)} into '{targetDescription}' in '{DescribeWindow(window)}'.");
+        return Task.FromResult($"Typed {DescribeTextLength(text)} into '{targetDescription}' in '{DescribeWindow(window)}'.");
     }
 
     public static Task<string> GetElementTextAsync(string targetApp, string elementName)
@@ -305,11 +304,27 @@ internal static partial class Win32UiAutomation
         public InputUnion U;
     }
 
+    // MOUSEINPUT is the union's largest member. Without it INPUT is 32 bytes instead of 40 on 64-bit
+    // Windows, and SendInput rejects every call because cbSize is wrong.
     [StructLayout(LayoutKind.Explicit)]
     private struct InputUnion
     {
         [FieldOffset(0)]
+        public MOUSEINPUT mi;
+
+        [FieldOffset(0)]
         public KEYBDINPUT ki;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MOUSEINPUT
+    {
+        public int dx;
+        public int dy;
+        public uint mouseData;
+        public uint dwFlags;
+        public uint time;
+        public IntPtr dwExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]

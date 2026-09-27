@@ -158,14 +158,26 @@ public static partial class JarvisCommandCatalog
         "goodbye"
     ];
 
+    public static IReadOnlyList<string> WriteDownPrefixes { get; } =
+    [
+        "write this down",
+        "write that down",
+        "write it down",
+        "write down",
+        "jot this down",
+        "jot that down",
+        "jot down"
+    ];
+
+    // "put the system to sleep", "put my laptop in sleep mode", "go to sleep", "sleep".
+    [GeneratedRegex(@"^(?:(?:go|enter) (?:to )?)?sleep(?: mode)?$|^put (?:the |my |this )?(?:system|computer|laptop|pc|machine) (?:to sleep|in(?:to)? sleep(?: mode)?)$")]
+    private static partial Regex SleepRegex();
+
+    // "note ..." and "make a note ..." mean a Sticky Note; see TryCanonicalizeStickyNoteCommand.
     public static IReadOnlyList<string> RememberPrefixes { get; } =
     [
         "remember",
-        "remember that",
-        "note",
-        "note that",
-        "take note",
-        "make a note"
+        "remember that"
     ];
 
     public static IReadOnlyList<string> RecallPrefixes { get; } =
@@ -486,6 +498,54 @@ public static partial class JarvisCommandCatalog
             return "exit";
         }
 
+        // Check sleep and dictation before natural-language routing, which accepts questions and commas.
+        // Dictation also takes precedence over the "note..." memory prefixes.
+        if (SleepRegex().IsMatch(normalized))
+        {
+            return "sleep";
+        }
+
+        // Before Sticky Notes, which would take "take notes on this lecture" as a note.
+        if (TryCanonicalizeLectureNotesCommand(trimmed, out var lectureNotesCommand))
+        {
+            return lectureNotesCommand;
+        }
+
+        // Note-taking goes to Sticky Notes, even when Notepad is named ("open notepad and make a note to ...").
+        // First, so "write this down in notepad" is a note rather than typing "this down" into Notepad.
+        if (TryCanonicalizeStickyNoteCommand(trimmed, out var stickyNoteCommand))
+        {
+            return stickyNoteCommand;
+        }
+
+        if (TryCanonicalizePageCommand(trimmed, out var pageCommand))
+        {
+            return pageCommand;
+        }
+
+        // Before "write down" (a Sticky Note) and before " and " sends the request to the planner:
+        // naming an app ("open notepad and write hello") means type it there.
+        if (TryCanonicalizeWriteIntoAppCommand(trimmed, out var writeIntoAppCommand))
+        {
+            return writeIntoAppCommand;
+        }
+
+        // Also ahead of the natural-language check: these are usually questions ("what's on today?").
+        if (TryCanonicalizeCalendarCommand(trimmed, out var calendarCommand))
+        {
+            return calendarCommand;
+        }
+
+        if (TryCanonicalizeVpnCommand(trimmed, out var vpnCommand))
+        {
+            return vpnCommand;
+        }
+
+        if (TryCanonicalizePayloadCommand(trimmed, WriteDownPrefixes, "write down", out var writeDownCommand))
+        {
+            return writeDownCommand;
+        }
+
         if (ShouldPreserveNaturalLanguage(trimmed))
         {
             return trimmed;
@@ -677,6 +737,285 @@ public static partial class JarvisCommandCatalog
     [GeneratedRegex("^([Oo]pen)(?=[A-Z0-9])")]
     private static partial Regex GluedOpenRegex();
 
+    // "open (up) (my) notepad and (then) write/type (down/out) hello world"
+    [GeneratedRegex(@"^open (?:up )?(?:my |the )?(?<app>[^,]+?),? and (?:then )?(?:write|type)(?: down| out)?(?: in it| into it)?[,:]? (?<text>.+)$", RegexOptions.IgnoreCase)]
+    private static partial Regex OpenAppAndWriteRegex();
+
+    // "write/type (down) hello world in/into/on (my) notepad"; the app is the last phrase, so a text
+    // that itself says "in" ("meet in the lobby in notepad") still splits at the final one.
+    [GeneratedRegex(@"^(?:write|type)(?: down| out)? (?<text>.+) (?:in|into|on) (?:my |the |a )?(?<app>[^,]+)$", RegexOptions.IgnoreCase)]
+    private static partial Regex WriteInAppRegex();
+
+    // "can you make a quick note that ...", "take a note: ...", "jot this down ...", "note that ...",
+    // "open my sticky notes and make a note to ...". The note's words follow in "rest".
+    [GeneratedRegex(@"^(?:(?:hey|ok|okay|so|um|uh|alright|all\s+right)[,\s]+)*(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|i\s+(?:need|want)\s+(?:you\s+)?to\s+|please\s+|go\s+ahead\s+and\s+|let'?s\s+)?(?:open\s+(?:up\s+)?(?:my\s+|the\s+)?(?:sticky\s+notes?|notepad|notes?)\s+and\s+(?:then\s+)?)?(?:(?:make|take|write|jot|add|create|leave|start|drop)\s+(?:me\s+)?(?:a\s+|an\s+|another\s+|one\s+)?(?:quick\s+|new\s+|little\s+|short\s+)?(?:sticky\s+)?note\b(?:\s+to\s+self\b)?|(?:write|jot|put|note)\s+(?:(?:this|that|it)\s+)?down\b|note(?=\s+that\b|\s*:)|sticky\s+note\b)(?<rest>.*)$", RegexOptions.IgnoreCase)]
+    private static partial Regex StickyNoteRequestRegex();
+
+    // "put milk and eggs on a sticky note", "add call mom to my sticky notes"
+    [GeneratedRegex(@"^(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|please\s+)?(?:add|put|write)\s+(?<rest>.+?)\s+(?:to|on|in|onto|into)\s+(?:a\s+|my\s+|the\s+)?(?:new\s+)?sticky\s+notes?$", RegexOptions.IgnoreCase)]
+    private static partial Regex OnStickyNoteRegex();
+
+    // What comes between the request and the note itself: "in my sticky notes", "that says", "to remind me to".
+    [GeneratedRegex(@"^[\s,:;-]*(?:(?:in|on|to|into|onto)\s+(?:my\s+|the\s+|a\s+)?(?:sticky\s+notes?|notepad|notes?(?:\s+app)?)\b)?[\s,:;-]*(?:(?:that\s+says|which\s+says|saying|to\s+say|to\s+remind\s+me(?:\s+to|\s+that)?|reminding\s+me(?:\s+to|\s+that)?|that|about|for\s+me|to|of)\b[\s,:;-]*)?", RegexOptions.IgnoreCase)]
+    private static partial Regex NoteLeadInRegex();
+
+    private static bool TryCanonicalizeStickyNoteCommand(string input, out string command)
+    {
+        command = string.Empty;
+
+        // Possibly canonical already, so the lead-in is left alone (a note may start with "to" or "that");
+        // only a trailing "in notepad" or "on my sticky notes" is dropped.
+        if (input.StartsWith("write down ", StringComparison.OrdinalIgnoreCase))
+        {
+            var text = Regex.Replace(
+                input["write down ".Length..].TrimEnd('.', '!', ' '),
+                @"\s+(?:in|on|to|into|onto)\s+(?:my\s+|the\s+|a\s+)?(?:sticky\s+notes?|notepad|notes?(?:\s+app)?)$",
+                string.Empty,
+                RegexOptions.IgnoreCase).Trim();
+            command = text.Length == 0 ? "write down" : $"write down {text}";
+            return true;
+        }
+
+        var match = OnStickyNoteRegex().Match(input.TrimEnd('.', '!', ' '));
+
+        if (!match.Success)
+        {
+            match = StickyNoteRequestRegex().Match(input);
+        }
+
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var note = NoteLeadInRegex().Replace(match.Groups["rest"].Value, string.Empty, 1).Trim();
+        command = note.Length == 0 ? "write down" : $"write down {note}";
+        return true;
+    }
+
+    private const string PageWords = @"(?:page|article|story|post|blog(?:\s+post)?|web\s*page|website|site|tab)";
+
+    // "read this article to me", "read me the page", "read it out loud"
+    [GeneratedRegex(@"^(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|please\s+)?read\s+(?:me\s+)?(?:(?:(?:this|the|that|current)\s+(?:whole\s+|full\s+)?" + PageWords + @"(?:\s+i'?m\s+on)?)|this|it|that)(?:\s+(?:to\s+me|for\s+me|out\s+loud|aloud))*$", RegexOptions.IgnoreCase)]
+    private static partial Regex ReadPageRegex();
+
+    // "summarize this page", "give me a quick summary of the article", "tldr", "summarize the reviews on this page"
+    [GeneratedRegex(@"^(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|please\s+)?(?:summari[sz]e|sum\s+up|recap|give\s+me\s+(?:a\s+|the\s+)?(?:quick\s+|short\s+|brief\s+)?(?:summary|rundown|gist|tl;?dr)(?:\s+of)?|tl;?dr|what'?s\s+the\s+(?:gist|tl;?dr|summary)(?:\s+of)?)(?<rest>.*)$", RegexOptions.IgnoreCase)]
+    private static partial Regex SummarizePageRegex();
+
+    // "what's this article about", "what does this page say about pricing"
+    [GeneratedRegex(@"^(?:what'?s|what\s+is|whats)\s+(?:this|the)\s+" + PageWords + @"\s+(?:about|saying)$|^what\s+does\s+(?:this|the)\s+" + PageWords + @"\s+say(?:\s+about\s+(?<focus>.+))?$", RegexOptions.IgnoreCase)]
+    private static partial Regex PageQuestionRegex();
+
+    [GeneratedRegex(@"(?:\s+(?:on|of|from|in|for))?\s*\b(?:this|the|that|current)\s+" + PageWords + @"\b(?:\s+i'?m\s+on)?", RegexOptions.IgnoreCase)]
+    private static partial Regex PageReferenceRegex();
+
+    private static bool TryCanonicalizePageCommand(string input, out string command)
+    {
+        command = string.Empty;
+        var text = input.Trim().TrimEnd('?', '.', '!', ' ');
+
+        if (ReadPageRegex().IsMatch(text))
+        {
+            command = "page read";
+            return true;
+        }
+
+        var question = PageQuestionRegex().Match(text);
+
+        if (question.Success)
+        {
+            command = $"page summarize {question.Groups["focus"].Value}".Trim();
+            return true;
+        }
+
+        var summarize = SummarizePageRegex().Match(text);
+
+        if (!summarize.Success)
+        {
+            return false;
+        }
+
+        var rest = summarize.Groups["rest"].Value;
+        var namesPage = PageReferenceRegex().IsMatch(rest);
+        var focus = PageReferenceRegex().Replace(rest, " ");
+        focus = Regex.Replace(focus, @"^\s*(?:of|on|about|for\s+me)\b|\bfor\s+me\s*$", " ", RegexOptions.IgnoreCase).Trim();
+        focus = Regex.IsMatch(focus, @"^(?:this|it|that)?$", RegexOptions.IgnoreCase) ? string.Empty : focus;
+
+        // "summarize my notes" is not about a web page; with no page named, only a bare "summarize this" is.
+        if (!namesPage && focus.Length > 0)
+        {
+            return false;
+        }
+
+        command = $"page summarize {focus}".Trim();
+        return true;
+    }
+
+    // "what's on my calendar tomorrow", "read me my schedule", "how does my calendar look on friday"
+    [GeneratedRegex(@"^(?:what(?:'s|s| is)|what do i have|do i have anything|read|tell|give|show|check|open|how(?:'s| does| is))\b.*\b(?:calendar|schedule|agenda)\b", RegexOptions.IgnoreCase)]
+    private static partial Regex CalendarQuestionRegex();
+
+    // "what do I have tomorrow", "what's going on today": no calendar word, so the rest must be a day.
+    [GeneratedRegex(@"^(?:what(?:'s|s| is)|what do i have|do i have anything|anything)\s+(?:(?:going\s+on|happening|planned|scheduled|on)\s+)?(?<when>.+)$", RegexOptions.IgnoreCase)]
+    private static partial Regex DayQuestionRegex();
+
+    // "add dentist to my calendar tomorrow at 3", "schedule a meeting with Sam friday at 2"
+    [GeneratedRegex(@"^(?:please\s+)?(?<verb>add|schedule|put|create|book|set\s+up)\s+(?<rest>.+)$", RegexOptions.IgnoreCase)]
+    private static partial Regex CalendarAddRegex();
+
+    private static bool TryCanonicalizeCalendarCommand(string input, out string command)
+    {
+        command = string.Empty;
+        var text = input.Trim().TrimEnd('?', '.', '!', ' ');
+        var now = DateTime.Now;
+
+        var add = CalendarAddRegex().Match(text);
+
+        if (add.Success)
+        {
+            var rest = add.Groups["rest"].Value;
+
+            // "add milk to the list" is not an event: it needs the calendar named, an event word, or "schedule".
+            if (add.Groups["verb"].Value.Equals("schedule", StringComparison.OrdinalIgnoreCase)
+                || Regex.IsMatch(rest, @"\bcalendar\b|^(?:an?\s+|the\s+)?(?:new\s+)?(?:event|appointment)\b", RegexOptions.IgnoreCase))
+            {
+                command = $"calendar add {rest}";
+                return true;
+            }
+
+            return false;
+        }
+
+        if (CalendarQuestionRegex().IsMatch(text))
+        {
+            var day = CalendarText.FindDate(text, now) ?? DateOnly.FromDateTime(now);
+            command = $"calendar {day:yyyy-MM-dd}";
+            return true;
+        }
+
+        var dayQuestion = DayQuestionRegex().Match(text);
+
+        if (dayQuestion.Success && CalendarText.TryParseDay(dayQuestion.Groups["when"].Value, now, out var askedDay))
+        {
+            command = $"calendar {askedDay:yyyy-MM-dd}";
+            return true;
+        }
+
+        return false;
+    }
+
+    // "start lecture notes for IT Professions", "record my biology lecture", "take notes on this meeting".
+    // Up to four words may name it before the kind ("my IT Professions lecture"), but no preposition, so
+    // "record a reminder for class" isn't a recording.
+    [GeneratedRegex(@"^(?:please\s+)?(?:start|begin|record|take)\s+(?:(?:taking|recording)\s+)?(?:notes\s+(?:on|for|in|during|of)\s+)?(?:(?:this|the|my|our|a|an|today'?s)\s+)?(?<before>(?:(?!(?:for|to|about|with|in|on|at|of)\b)[\w'&.-]+\s+){0,4}?)(?<kind>lecture|class|meeting)(?:\s+(?:notes|recording))?(?:\s+(?:for|in|on|called|named|about|of)\s+(?:(?:the|my|our)\s+)?(?<after>.+))?$", RegexOptions.IgnoreCase)]
+    private static partial Regex LectureNotesStartRegex();
+
+    // "stop recording", "end the meeting notes", "stop taking notes", "class is over"
+    [GeneratedRegex(@"^(?:please\s+)?(?:stop|end|finish|wrap\s+up)\s+(?:taking\s+)?(?:(?:the|my|this)\s+)?(?:(?:lecture|class|meeting)\s+)?(?:notes|recording)$|^(?:the\s+)?(?:lecture|class|meeting)\s+is\s+over$", RegexOptions.IgnoreCase)]
+    private static partial Regex LectureNotesStopRegex();
+
+    private static bool TryCanonicalizeLectureNotesCommand(string input, out string command)
+    {
+        command = string.Empty;
+        var text = input.Trim().TrimEnd('?', '.', '!', ' ');
+
+        if (LectureNotesStopRegex().IsMatch(text))
+        {
+            command = "lecture notes stop";
+            return true;
+        }
+
+        var start = LectureNotesStartRegex().Match(text);
+
+        // "start the meeting" or "take the class" asks for no recording.
+        if (!start.Success || !Regex.IsMatch(text, @"\b(?:notes|record|recording)\b", RegexOptions.IgnoreCase))
+        {
+            return false;
+        }
+
+        var isMeeting = start.Groups["kind"].Value.Equals("meeting", StringComparison.OrdinalIgnoreCase);
+        var name = (start.Groups["after"].Success ? start.Groups["after"].Value : start.Groups["before"].Value).Trim();
+
+        if (name.Length == 0)
+        {
+            name = isMeeting ? "Meeting" : "Lecture";
+        }
+        else if (isMeeting && !name.Contains("meeting", StringComparison.OrdinalIgnoreCase))
+        {
+            name += " Meeting";
+        }
+
+        command = $"lecture notes start {name}";
+        return true;
+    }
+
+    // "turn on my vpn", "disconnect the vpn", "is my vpn on?"
+    private static bool TryCanonicalizeVpnCommand(string input, out string command)
+    {
+        command = string.Empty;
+        var text = input.Trim().TrimEnd('?', '.', '!', ' ');
+
+        // "what is a vpn" is a question for the planner, and "turn on the vpn and open chrome" is two requests.
+        if (!Regex.IsMatch(text, @"\bvpn\b", RegexOptions.IgnoreCase)
+            || Regex.IsMatch(text, @"\ba\s+vpn\b|\s+and\s+", RegexOptions.IgnoreCase))
+        {
+            return false;
+        }
+
+        // A question first: "is my vpn on" asks, it doesn't turn it on.
+        command = Regex.IsMatch(text, @"^(?:is|am\s+i|are\s+(?:we|you)|check|what'?s|what\s+is|how'?s|how\s+is)\b", RegexOptions.IgnoreCase) ? "vpn status"
+            : Regex.IsMatch(text, @"\b(?:off|disconnect|disable|stop|deactivate|kill)\b", RegexOptions.IgnoreCase) ? "vpn off"
+            : Regex.IsMatch(text, @"\b(?:on|connect|enable|start|activate)\b", RegexOptions.IgnoreCase) ? "vpn on"
+            : string.Empty;
+        return command.Length > 0;
+    }
+
+    private static bool TryCanonicalizeWriteIntoAppCommand(string input, out string command)
+    {
+        command = string.Empty;
+        var isKnownApplication = KnownApplicationNameCheck;
+
+        // Already canonical; re-reading "type into notepad open it in chrome" would retarget it.
+        if (isKnownApplication is null
+            || input.StartsWith("type into ", StringComparison.OrdinalIgnoreCase)
+            || input.StartsWith("write into ", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var match = OpenAppAndWriteRegex().Match(input);
+
+        if (!match.Success)
+        {
+            match = WriteInAppRegex().Match(input);
+        }
+
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var app = match.Groups["app"].Value.Trim();
+        var text = match.Groups["text"].Value.Trim().Trim('"');
+
+        // Sticky Notes needs a new note opened before typing, which the write-down tool does.
+        if (app.StartsWith("sticky note", StringComparison.OrdinalIgnoreCase) && text.Length > 0)
+        {
+            command = $"write down {text}";
+            return true;
+        }
+
+        // Only an exact installed-app name counts; otherwise the words were not an app ("write it in pen").
+        if (text.Length == 0 || app.Length > 40 || !isKnownApplication(app))
+        {
+            return false;
+        }
+
+        command = $"type into {(app.Contains(' ') ? $"\"{app}\"" : app)} {text}";
+        return true;
+    }
+
     private static bool TryCanonicalizeOpenKnownApplication(string input, out string command)
     {
         command = string.Empty;
@@ -754,6 +1093,15 @@ public static partial class JarvisCommandCatalog
         }
 
         var remainder = input["open ".Length..].TrimStart(' ', ',', ':', ';', '-');
+
+        // Already canonical ("open path x.txt"): leave it for the open-path prefixes below. Otherwise
+        // normalizing it a second time would produce "open path path x.txt".
+        if (OpenPathPrefixes.Any(prefix => input.StartsWith(prefix + " ", StringComparison.OrdinalIgnoreCase)))
+        {
+            command = string.Empty;
+            return false;
+        }
+
         remainder = StripLeadingFillerWords(remainder);
 
         if (string.IsNullOrWhiteSpace(remainder))
@@ -838,10 +1186,12 @@ public static partial class JarvisCommandCatalog
 
             var separatorIndex = remainder.LastIndexOf(" into ", StringComparison.OrdinalIgnoreCase);
 
+            // No target named ("write it in pen"): the first word would be taken as a window. Let the
+            // planner read it instead; an app named with "in"/"on" was already handled above.
             if (separatorIndex <= 0)
             {
-                command = $"type into {remainder}";
-                return true;
+                command = string.Empty;
+                return false;
             }
 
             var text = remainder[..separatorIndex].Trim();
@@ -1094,7 +1444,8 @@ public static partial class JarvisCommandCatalog
             return false;
         }
 
-        if (candidate.IndexOfAny(['?', '!', ':', ';']) >= 0)
+        // A sentence break means more than a name was said ("notepad. There we go"): let the planner read it.
+        if (candidate.IndexOfAny(['?', '!', ':', ';']) >= 0 || candidate.Contains(". ", StringComparison.Ordinal))
         {
             return false;
         }
@@ -1162,6 +1513,12 @@ public static partial class JarvisCommandCatalog
             return false;
         }
 
+        // Without this, any short phrase became "open app <phrase>": "Close Notepad" or "I'm glad it works".
+        if (KnownApplicationNameCheck is { } isKnownApplication && !isKnownApplication(candidate))
+        {
+            return false;
+        }
+
         command = $"open app {candidate}";
         return true;
     }
@@ -1175,7 +1532,10 @@ public static partial class JarvisCommandCatalog
             return false;
         }
 
-        if (candidate.Length > 64 || candidate.IndexOfAny(['?', '!', ':', ';']) >= 0)
+        // A sentence break means more than a name was said ("notepad. There we go"): let the planner read it.
+        if (candidate.Length > 64
+            || candidate.IndexOfAny(['?', '!', ':', ';']) >= 0
+            || candidate.Contains(". ", StringComparison.Ordinal))
         {
             return false;
         }
@@ -1346,7 +1706,8 @@ public static partial class JarvisCommandCatalog
             || value.StartsWith("%", StringComparison.Ordinal)
             || value.StartsWith(".", StringComparison.Ordinal)
             || value.Contains(":\\", StringComparison.Ordinal)
-            || Path.HasExtension(value)
+            // A real extension has no spaces; "notepad. There we go" is two spoken sentences, not a file.
+            || (Path.HasExtension(value) && !Path.GetExtension(value).Any(char.IsWhiteSpace))
             || value.Equals("desktop", StringComparison.OrdinalIgnoreCase)
             || value.Equals("documents", StringComparison.OrdinalIgnoreCase)
             || value.Equals("downloads", StringComparison.OrdinalIgnoreCase)

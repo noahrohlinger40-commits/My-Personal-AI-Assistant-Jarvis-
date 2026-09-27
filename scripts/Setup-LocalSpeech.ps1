@@ -68,8 +68,19 @@ print(f"model ready: {weights.stat().st_size / 1_048_576:.0f} MB")
 '@
 if ($LASTEXITCODE -ne 0) { throw 'Model download failed. Check your internet connection and run this again.' }
 
+Write-Host "Voice model 'Kokoro' (downloaded once, about 350 MB)..."
+$kokoroDir = Join-Path $SpeechHome 'models\kokoro'
+$kokoroBase = 'https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0'
+New-Item -ItemType Directory -Force $kokoroDir | Out-Null
+foreach ($file in 'kokoro-v1.0.onnx', 'voices-v1.0.bin') {
+    $target = Join-Path $kokoroDir $file
+    if (-not ((Test-Path $target) -and (Get-Item $target).Length -gt 1000000)) {
+        Invoke-WebRequest -Uri "$kokoroBase/$file" -OutFile $target
+    }
+}
+
 Write-Host ''
-Write-Host 'Local speech recognition is ready. In jarvis.settings.json use:'
+Write-Host 'Local speech recognition and voice are ready. In jarvis.settings.json use:'
 Write-Host '  "speechRecognitionBaseUrl": "http://127.0.0.1:8178/v1",'
 Write-Host "  `"speechRecognitionModel`": `"$Model`","
 Write-Host 'Then start Jarvis as usual. It launches the speech server automatically.'

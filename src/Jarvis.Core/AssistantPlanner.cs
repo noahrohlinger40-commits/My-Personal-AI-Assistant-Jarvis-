@@ -257,7 +257,23 @@ internal sealed partial class StructuredAssistantPlanner : IAssistantPlanner
                 Detail: resolutionDetail));
         }
 
+        // On a local model the classifier and the reply each take seconds. When a plain reply is the likely
+        // outcome, start it alongside the classifier and cancel it if the classifier routes elsewhere.
+        using var speculativeReplyCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var speculativeReply = pendingSession is null
+            && resumedSession is null
+            && _modelGateway.IsAvailable
+            && ClassifyHeuristically(effectiveInput, effectiveRequest, null).Intent == AgentIntentKind.SimpleReply
+                ? ExecuteSimpleReplyAsync(effectiveRequest, sessionId, null, speculativeReplyCts.Token)
+                : null;
+
         var intentDecision = await ClassifyIntentAsync(effectiveInput, effectiveRequest, pendingSession, resumedSession, sessionId, activity, cancellationToken);
+
+        if (intentDecision.Intent != AgentIntentKind.SimpleReply || intentDecision.AskFollowUp || intentDecision.RunInBackground)
+        {
+            speculativeReplyCts.Cancel();
+            speculativeReply = null;
+        }
 
         if (intentDecision.AskFollowUp)
         {
@@ -297,11 +313,11 @@ internal sealed partial class StructuredAssistantPlanner : IAssistantPlanner
                 executeToolAsync,
                 sessionId,
                 cancellationToken),
-            AgentIntentKind.SimpleReply => await ExecuteSimpleReplyAsync(
+            AgentIntentKind.SimpleReply => await (speculativeReply ?? ExecuteSimpleReplyAsync(
                 effectiveRequest,
                 sessionId,
                 resumedSession,
-                cancellationToken),
+                cancellationToken)),
             AgentIntentKind.Research => await ExecuteResearchIntentAsync(
                 effectiveInput,
                 sessionId,
@@ -316,6 +332,33 @@ internal sealed partial class StructuredAssistantPlanner : IAssistantPlanner
                 false,
                 cancellationToken)
         };
+    }
+
+    private static readonly string[] CorePlannerTools =
+    [
+        "computer", "open app", "focus app", "close app", "type into", "send hotkey",
+        "click element", "open path", "search web", "wait", "calendar", "write down", "page"
+    ];
+
+    // Limit local-model context to core tools and tools whose names match words in the request.
+    // Word matching can miss relevant tools that the user does not name.
+    private IEnumerable<PlannerToolDefinition> SelectPlannerTools(AssistantPlanningRequest request)
+    {
+        if (!string.Equals(_options.PlannerProvider?.Trim(), "local", StringComparison.OrdinalIgnoreCase))
+        {
+            return request.Tools;
+        }
+
+        var inputWords = request.UserInput
+            .ToLowerInvariant()
+            .Split([' ', ',', '.', '?', '!', ':', ';', '"', '\''], StringSplitOptions.RemoveEmptyEntries)
+            .ToHashSet();
+
+        return request.Tools
+            .Where(tool => CorePlannerTools.Contains(tool.CommandName, StringComparer.OrdinalIgnoreCase)
+                || tool.CommandName.Split(' ').Any(word => word.Length >= 4 && (inputWords.Contains(word) || inputWords.Contains(word + "s"))))
+            .OrderByDescending(tool => CorePlannerTools.Contains(tool.CommandName, StringComparer.OrdinalIgnoreCase))
+            .Take(18);
     }
 
     private async Task<AssistantPlanningResult> QueueBackgroundTaskAsync(
@@ -463,7 +506,7 @@ internal sealed partial class StructuredAssistantPlanner : IAssistantPlanner
         }
 
         var messages = BuildConversationMessages(request, existingSession);
-        var toolDefinitions = request.Tools
+        var toolDefinitions = SelectPlannerTools(request)
             .Select(tool => new ChatToolDefinition(
                 tool.ApiName,
                 $"{tool.Description} Pass only the argument tail in `input`.",
