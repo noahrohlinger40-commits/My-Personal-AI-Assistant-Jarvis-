@@ -54,6 +54,8 @@ internal static class MemoryAutomation
     private static readonly Regex WorkingOnProjectRegex = new(@"\b(?:i am working on|i'm working on|i am building|i'm building|my project is)\s+(?<project>.+)$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex WorkFromPlaceRegex = new(@"\b(?:i work from|i study at|i train at)\s+(?<place>.+)$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex AddressPreferenceRegex = new(@"\b(?:call me|you can call me|my nickname is|my preferred name is|refer to me as|address me as|my name is)\s+(?<name>.+)$", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex ReminderPrefixRegex = new(@"^(?:remind\s+me|set\s+(?:a\s+)?reminder)\s+(?:(?:to|about|that)\s+)?", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex RelativeReminderRegex = new(@"\bin\s+(?:(?<half>half\s+an)|(?<n>an?|one|two|three|four|five|six|seven|eight|nine|ten|fifteen|twenty|thirty|\d+(?:\.\d+)?))\s*(?<u>seconds?|secs?|minutes?|mins?|hours?|hrs?|days?)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly string[] ToneTerms =
     [
         "concise",
@@ -1153,169 +1155,74 @@ internal static class MemoryAutomation
         reminderText = string.Empty;
         reminderAtLocal = default;
 
-        var trimmed = input.Trim();
-        var prefixes = new[]
-        {
-            "remind me to ",
-            "remind me about ",
-            "set reminder to ",
-            "set a reminder to "
-        };
+        var prefix = ReminderPrefixRegex.Match(input.Trim());
 
-        var body = prefixes
-            .FirstOrDefault(prefix => trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
-
-        if (body is null)
+        if (!prefix.Success)
         {
             return false;
         }
 
-        var payload = trimmed[body.Length..].Trim();
+        var payload = input.Trim()[prefix.Length..];
+        var relative = RelativeReminderRegex.Match(payload);
 
-        if (string.IsNullOrWhiteSpace(payload))
+        if (relative.Success)
         {
-            return false;
+            reminderAtLocal = nowLocal.Add(ParseRelativeReminder(relative));
+            payload = payload.Remove(relative.Index, relative.Length);
         }
-
-        if (TrySplitReminderPayload(payload, " tomorrow at ", out reminderText, out var tomorrowTime)
-            && TryParseTimeOfDay(tomorrowTime, nowLocal, out var parsedTomorrow))
+        else
         {
-            reminderAtLocal = ShiftToDay(parsedTomorrow, nowLocal.Date.AddDays(1));
-            return true;
-        }
+            // The calendar's reader, so reminders understand the same times: "3.30", "2:29 a. m.", "noon".
+            var (date, time) = CalendarText.ExtractWhen(ref payload, nowLocal.DateTime);
+            var today = DateOnly.FromDateTime(nowLocal.DateTime);
 
-        if (payload.EndsWith(" tomorrow", StringComparison.OrdinalIgnoreCase))
-        {
-            reminderText = payload[..^" tomorrow".Length].Trim();
+            // A time with no date is the next one; a date with no time ("tomorrow") is 9 AM.
+            var at = time is TimeOnly clock
+                ? (date ?? (clock > TimeOnly.FromDateTime(nowLocal.DateTime) ? today : today.AddDays(1))).ToDateTime(clock)
+                : date?.ToDateTime(new TimeOnly(9, 0));
 
-            if (!string.IsNullOrWhiteSpace(reminderText))
+            // An unspecified-kind DateTime takes the local offset for its own date, so DST is right.
+            if (at is null || new DateTimeOffset(at.Value) < nowLocal)
             {
-                reminderAtLocal = new DateTimeOffset(nowLocal.Year, nowLocal.Month, nowLocal.Day, 9, 0, 0, nowLocal.Offset).AddDays(1);
-                return true;
-            }
-        }
-
-        if (TrySplitReminderPayload(payload, " today at ", out reminderText, out var todayTime)
-            && TryParseTimeOfDay(todayTime, nowLocal, out var parsedToday))
-        {
-            reminderAtLocal = ShiftToDay(parsedToday, nowLocal.Date);
-
-            if (reminderAtLocal < nowLocal)
-            {
-                reminderAtLocal = reminderAtLocal.AddDays(1);
+                return false;
             }
 
-            return true;
+            reminderAtLocal = new DateTimeOffset(at.Value);
         }
 
-        if (TrySplitReminderPayload(payload, " in ", out reminderText, out var relativeSpan)
-            && TryParseRelativeReminder(relativeSpan, out var offset))
-        {
-            reminderAtLocal = nowLocal.Add(offset);
-            return !string.IsNullOrWhiteSpace(reminderText);
-        }
-
-        if (TrySplitReminderPayload(payload, " on ", out reminderText, out var absoluteDate)
-            && TryParseAbsoluteReminder(absoluteDate, nowLocal, out var parsedAbsolute))
-        {
-            reminderAtLocal = parsedAbsolute;
-            return !string.IsNullOrWhiteSpace(reminderText);
-        }
-
-        if (TrySplitReminderPayload(payload, " at ", out reminderText, out var timeText)
-            && TryParseTimeOfDay(timeText, nowLocal, out var parsedTime))
-        {
-            reminderAtLocal = parsedTime < nowLocal ? parsedTime.AddDays(1) : parsedTime;
-            return !string.IsNullOrWhiteSpace(reminderText);
-        }
-
-        return false;
+        // Words stranded by the removed time: "to stretch" from "in 10 minutes to stretch", "call mom at".
+        reminderText = Regex.Replace(payload, @"\s+", " ").Trim(' ', ',', '.', ';', ':', '-');
+        reminderText = Regex.Replace(reminderText, @"^(?:(?:to|about|that)\s+)+|(?:\s+(?:at|on|in|for|by|and|to|,))+$", string.Empty, RegexOptions.IgnoreCase).Trim(' ', ',', '.');
+        return reminderText.Length > 0;
     }
 
-    private static bool TrySplitReminderPayload(
-        string payload,
-        string marker,
-        out string reminderText,
-        out string timeText)
+    private static TimeSpan ParseRelativeReminder(Match match)
     {
-        var index = payload.LastIndexOf(marker, StringComparison.OrdinalIgnoreCase);
-
-        if (index <= 0)
+        var amount = match.Groups["half"].Success ? 0.5 : match.Groups["n"].Value.ToLowerInvariant() switch
         {
-            reminderText = string.Empty;
-            timeText = string.Empty;
-            return false;
-        }
-
-        reminderText = payload[..index].Trim();
-        timeText = payload[(index + marker.Length)..].Trim();
-        return !string.IsNullOrWhiteSpace(reminderText) && !string.IsNullOrWhiteSpace(timeText);
-    }
-
-    private static bool TryParseRelativeReminder(string input, out TimeSpan offset)
-    {
-        offset = default;
-        var parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-        if (parts.Length < 2 || !double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var amount))
-        {
-            return false;
-        }
-
-        offset = parts[1].ToLowerInvariant() switch
-        {
-            "minute" or "minutes" or "min" or "mins" => TimeSpan.FromMinutes(amount),
-            "hour" or "hours" or "hr" or "hrs" => TimeSpan.FromHours(amount),
-            "day" or "days" => TimeSpan.FromDays(amount),
-            _ => default
+            "a" or "an" or "one" => 1,
+            "two" => 2,
+            "three" => 3,
+            "four" => 4,
+            "five" => 5,
+            "six" => 6,
+            "seven" => 7,
+            "eight" => 8,
+            "nine" => 9,
+            "ten" => 10,
+            "fifteen" => 15,
+            "twenty" => 20,
+            "thirty" => 30,
+            var number => double.Parse(number, CultureInfo.InvariantCulture)
         };
 
-        return offset > TimeSpan.Zero;
-    }
-
-    private static bool TryParseAbsoluteReminder(string input, DateTimeOffset nowLocal, out DateTimeOffset reminderAtLocal)
-    {
-        reminderAtLocal = default;
-
-        if (!DateTime.TryParse(input, CultureInfo.CurrentCulture, DateTimeStyles.AllowWhiteSpaces, out var parsed))
+        return char.ToLowerInvariant(match.Groups["u"].Value[0]) switch
         {
-            return false;
-        }
-
-        var unspecified = DateTime.SpecifyKind(parsed, DateTimeKind.Unspecified);
-        reminderAtLocal = new DateTimeOffset(unspecified, nowLocal.Offset);
-
-        if (reminderAtLocal < nowLocal && !input.Contains(':'))
-        {
-            reminderAtLocal = reminderAtLocal.AddHours(9);
-        }
-
-        return true;
-    }
-
-    private static bool TryParseTimeOfDay(string input, DateTimeOffset nowLocal, out DateTimeOffset reminderAtLocal)
-    {
-        reminderAtLocal = default;
-
-        if (!DateTime.TryParse(input, CultureInfo.CurrentCulture, DateTimeStyles.AllowWhiteSpaces, out var parsed))
-        {
-            return false;
-        }
-
-        reminderAtLocal = new DateTimeOffset(
-            nowLocal.Year,
-            nowLocal.Month,
-            nowLocal.Day,
-            parsed.Hour,
-            parsed.Minute,
-            0,
-            nowLocal.Offset);
-        return true;
-    }
-
-    private static DateTimeOffset ShiftToDay(DateTimeOffset timeOfDay, DateTime day)
-    {
-        return new DateTimeOffset(day.Year, day.Month, day.Day, timeOfDay.Hour, timeOfDay.Minute, 0, timeOfDay.Offset);
+            's' => TimeSpan.FromSeconds(amount),
+            'm' => TimeSpan.FromMinutes(amount),
+            'h' => TimeSpan.FromHours(amount),
+            _ => TimeSpan.FromDays(amount)
+        };
     }
 
     private static string BuildSummaryText(

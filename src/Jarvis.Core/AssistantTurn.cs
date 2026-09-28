@@ -56,6 +56,23 @@ public static class SpokenReply
 
         return spoken.ToString();
     }
+
+    /// <summary>
+    /// Whether what the microphone heard is Jarvis's own voice coming back through the speaker. It can only
+    /// be when the reply itself says "Jarvis"; otherwise a heard "Jarvis" came from someone else.
+    /// </summary>
+    public static bool IsEcho(string heard, string spokenReply)
+    {
+        var spokenWords = Regex.Matches(spokenReply.ToLowerInvariant(), @"[a-z0-9']+").Select(match => match.Value).ToHashSet();
+
+        if (!spokenWords.Contains("jarvis") && !spokenWords.Contains("jarvis's"))
+        {
+            return false;
+        }
+
+        var heardWords = Regex.Matches(heard.ToLowerInvariant(), @"[a-z0-9']+").Select(match => match.Value).ToList();
+        return heardWords.Count >= 3 && heardWords.Count(spokenWords.Contains) >= heardWords.Count * 0.6;
+    }
 }
 
 public sealed record AssistantTurn(

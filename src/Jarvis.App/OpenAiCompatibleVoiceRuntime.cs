@@ -11,6 +11,11 @@ internal sealed class OpenAiCompatibleVoiceRuntime : IVoiceRuntime
     // A single spoken command is far shorter than this; the cap only matters for steady background sound.
     private const int MaximumUtteranceMilliseconds = 15_000;
 
+    // While Jarvis talks through a speaker its own voice never leaves the 850 ms of quiet that ends an
+    // utterance, so "Jarvis, stop" would wait inside a 15 s piece of echo. Short pieces get it heard quickly;
+    // the pre-roll overlap keeps a wake word cut at a boundary whole.
+    private const int PlaybackUtteranceMilliseconds = 3_000;
+
     private readonly object _sync = new();
     private readonly JarvisOptions _options;
     private readonly OpenAiCompatibleTranscriptionClient _client;
@@ -24,6 +29,7 @@ internal sealed class OpenAiCompatibleVoiceRuntime : IVoiceRuntime
     private readonly int _preRollByteLimit;
     private readonly int _minimumUtteranceBytes;
     private readonly int _maximumUtteranceBytes;
+    private readonly int _playbackUtteranceBytes;
     private WaveInEvent? _capture;
     private CancellationTokenSource? _lifetimeCts;
     private MemoryStream? _activeSpeechBuffer;
@@ -49,6 +55,7 @@ internal sealed class OpenAiCompatibleVoiceRuntime : IVoiceRuntime
         _preRollByteLimit = BytesForMilliseconds(Math.Max(0, options.SpeechRecognitionPreRollMilliseconds), options.SpeechRecognitionSampleRateHz);
         _minimumUtteranceBytes = BytesForMilliseconds(Math.Max(0, options.SpeechRecognitionMinimumUtteranceMilliseconds), options.SpeechRecognitionSampleRateHz);
         _maximumUtteranceBytes = BytesForMilliseconds(MaximumUtteranceMilliseconds, options.SpeechRecognitionSampleRateHz);
+        _playbackUtteranceBytes = BytesForMilliseconds(PlaybackUtteranceMilliseconds, options.SpeechRecognitionSampleRateHz);
         _noiseFloor = _audioProcessing.AmbientNoiseFloor;
 
         CurrentStatus = new VoiceStatusSnapshot(
@@ -315,7 +322,7 @@ internal sealed class OpenAiCompatibleVoiceRuntime : IVoiceRuntime
 
                 // Steady background sound never produces the silence that normally ends an utterance,
                 // so send what we have and start a fresh one instead of recording without limit.
-                if (_activeSpeechBuffer.Length >= _maximumUtteranceBytes)
+                if (_activeSpeechBuffer.Length >= (echoControl.IsPlaybackActive ? _playbackUtteranceBytes : _maximumUtteranceBytes))
                 {
                     utterance = FinalizeSpeechBuffer();
                 }
@@ -386,7 +393,11 @@ internal sealed class OpenAiCompatibleVoiceRuntime : IVoiceRuntime
     {
         var lifetimeToken = _lifetimeCts?.Token ?? CancellationToken.None;
         // The built-in wake check takes up to a few seconds, so run it alongside transcription, not before it.
-        var wakeHintTask = Task.Run(() => TryDetectWakeWord(utteranceBytes));
+        // Skipped while Jarvis is talking: every piece of its echo would wait on it and the queue would fall
+        // behind, and interrupting needs the wake word in the transcript anyway.
+        var wakeHintTask = _echoSuppressor.IsPlaybackActive
+            ? Task.FromResult<WakeWordDetectionResult?>(null)
+            : Task.Run(() => TryDetectWakeWord(utteranceBytes));
 
         try
         {

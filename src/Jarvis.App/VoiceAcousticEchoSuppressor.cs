@@ -31,6 +31,17 @@ internal sealed class VoiceAcousticEchoSuppressor
             profile.VoiceActivityThreshold * 1.50 * profile.EchoGateScale * profile.PlaybackEchoFloorScale);
     }
 
+    public bool IsPlaybackActive
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _isPlaybackActive;
+            }
+        }
+    }
+
     public void SetPlaybackState(bool isSpeaking)
     {
         lock (_sync)

@@ -102,7 +102,11 @@ public sealed record JarvisOptions
 
     public bool SpeechRecognitionEchoCancellationEnabled { get; init; } = false;
 
-    public bool SpeechRecognitionBargeInEnabled { get; init; } = true;
+    /// <summary>
+    /// Stop talking whenever the microphone gets loud during a reply. Only safe with headphones: through a
+    /// speaker Jarvis hears its own voice and cuts itself off. Saying "Jarvis ..." interrupts either way.
+    /// </summary>
+    public bool SpeechRecognitionBargeInEnabled { get; init; } = false;
 
     public bool SpeechRecognitionBeamformingEnabled { get; init; } = false;
 

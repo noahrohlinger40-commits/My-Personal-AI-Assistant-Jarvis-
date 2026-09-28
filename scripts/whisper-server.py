@@ -76,6 +76,11 @@ CAPTION_HALLUCINATIONS = {
     "please subscribe", "like and subscribe", "subtitles by the amaraorg community", "you",
 }
 
+# Whisper can get stuck repeating itself on noise or on Jarvis's own echo ("Thank you. Thank you. ..."
+# twenty times), which the app would then treat as a long request. Text that compresses this well is
+# Whisper's own sign of that loop; 2.4 is the threshold Whisper itself uses.
+REPETITION_COMPRESSION_RATIO = 2.4
+
 app = FastAPI(title="Jarvis local speech server")
 _model: WhisperModel | None = None
 _tts = None  # Kokoro, loaded after Whisper so speech recognition is ready first
@@ -159,6 +164,7 @@ def transcribe_bytes(audio: bytes, language: str | None, prompt: str | None) -> 
             {"start": round(segment.start, 2), "end": round(segment.end, 2), "text": segment.text.strip()}
             for segment in segments
             if re.sub(r"[^a-z ]", "", segment.text.lower()).strip() not in CAPTION_HALLUCINATIONS
+            and segment.compression_ratio <= REPETITION_COMPRESSION_RATIO
         ]
 
     text = " ".join(segment["text"] for segment in timed).strip()

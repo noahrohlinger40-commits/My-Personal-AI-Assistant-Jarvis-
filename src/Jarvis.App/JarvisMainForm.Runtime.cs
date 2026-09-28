@@ -23,6 +23,7 @@ internal sealed partial class JarvisMainForm
         try
         {
             await RefreshRuntimeStateAsync();
+            await AnnounceDueRemindersAsync();
         }
         catch (OperationCanceledException)
         {
@@ -34,6 +35,43 @@ internal sealed partial class JarvisMainForm
         {
             _isRefreshingUiState = false;
         }
+    }
+
+    private async Task AnnounceDueRemindersAsync()
+    {
+        // Waits for a quiet moment so a reminder never talks over a reply.
+        if (_isSubmitting || _context.Speaker.CurrentStatus.IsSpeaking)
+        {
+            return;
+        }
+
+        var token = _cancellationTokenSource.Token;
+        var nowUtc = DateTimeOffset.UtcNow;
+        var due = (await _context.Assistant.GetPendingRemindersAsync(token))
+            .Where(note => note.ReminderAtUtc <= nowUtc)
+            .ToList();
+
+        if (due.Count == 0)
+        {
+            return;
+        }
+
+        // Marked done before speaking, so a failed announcement can't repeat on every tick.
+        foreach (var note in due)
+        {
+            await _context.Assistant.UpdateMemoryAsync(
+                new MemoryUpdateRequest(
+                    note.Id, note.Content, note.Kind, note.Category, note.Privacy, note.Tags ?? [], note.ImportanceScore,
+                    note.RetentionPolicy, note.ExpiresAtUtc, note.UserApprovedRetention, note.ReminderAtUtc, note.ReminderText,
+                    "completed", note.Entities),
+                token);
+        }
+
+        var items = due.Select(note => (string.IsNullOrWhiteSpace(note.ReminderText) ? note.Content : note.ReminderText).TrimEnd('.'));
+        var message = $"Reminder: {string.Join("; ", items)}.";
+        AppendMessage(_currentOptions.AssistantName.ToUpperInvariant(), message, Color.FromArgb(106, 220, 197));
+        // Not awaited, so the rest of the screen keeps refreshing while it speaks.
+        _ = TrySpeakAsync(message, token);
     }
 
     private async Task RefreshRuntimeStateAsync()
@@ -1532,6 +1570,23 @@ internal sealed partial class JarvisMainForm
 
     private async Task HandleVoiceCommandAsync(VoiceCommandRecognizedEventArgs eventArgs)
     {
+        // Talking over a reply only counts with the wake word ("Jarvis, stop", "Jarvis, that's good, thank you"):
+        // loudness can't tell the user from Jarvis's own voice coming back through a speaker. The words aren't
+        // acted on, since at speaker volume they're mixed with the echo; Jarvis goes quiet and listens instead.
+        var speaker = _context.Speaker.CurrentStatus;
+
+        if (speaker.IsSpeaking)
+        {
+            if (!SpokenReply.IsEcho(eventArgs.RawText, speaker.Message))
+            {
+                _context.Speaker.Interrupt();
+                _currentVoiceRuntime.ListenForFollowUp();
+                AddBargeInTimelineEntry("wake word");
+            }
+
+            return;
+        }
+
         if (_isSubmitting)
         {
             if (DateTimeOffset.UtcNow - _lastBargeInUtc < TimeSpan.FromSeconds(4))
@@ -1626,7 +1681,7 @@ internal sealed partial class JarvisMainForm
         AppendTimelineEntry(
             "VOICE",
             "Barge-in detected.",
-            $"The microphone detected user speech during playback ({reason}).",
+            $"Voice output was interrupted ({reason}).",
             Color.FromArgb(255, 191, 105));
     }
 

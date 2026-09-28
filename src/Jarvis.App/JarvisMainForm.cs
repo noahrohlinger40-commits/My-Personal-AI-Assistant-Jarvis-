@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Jarvis.Core;
 
@@ -176,6 +177,65 @@ internal sealed partial class JarvisMainForm : Form
         _refreshTimer.Start();
         _waveformTimer.Start();
         _ = InitializeRuntimeAsync();
+    }
+
+    // The voice hotkey (speechRecognitionHotkey) works from any app: it stops Jarvis mid-reply and listens
+    // for a command, like saying "Jarvis". It is the reliable way to cut off a long page reading, since
+    // Jarvis can't always hear "Jarvis, stop" over its own voice. Registered per window handle, because
+    // moving to the tray recreates the handle.
+    private const int WmHotkey = 0x0312;
+    private const int VoiceHotkeyId = 1;
+
+    [DllImport("user32.dll")]
+    private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+    [DllImport("user32.dll")]
+    private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+
+        // "Control+Space" reads as Keys.Control | Keys.Space.
+        if (!_currentOptions.SpeechRecognitionHotkeyEnabled
+            || !Enum.TryParse<Keys>(_currentOptions.SpeechRecognitionHotkey.Replace("Ctrl", "Control").Replace('+', ','), ignoreCase: true, out var keys))
+        {
+            return;
+        }
+
+        const uint modAlt = 0x1, modControl = 0x2, modShift = 0x4, modNoRepeat = 0x4000;
+        var modifiers = modNoRepeat
+            | (keys.HasFlag(Keys.Alt) ? modAlt : 0)
+            | (keys.HasFlag(Keys.Control) ? modControl : 0)
+            | (keys.HasFlag(Keys.Shift) ? modShift : 0);
+
+        if (!RegisterHotKey(Handle, VoiceHotkeyId, modifiers, (uint)(keys & Keys.KeyCode)))
+        {
+            BeginInvoke(() => AppendSystemMessage(
+                $"The voice hotkey {_currentOptions.SpeechRecognitionHotkey} is taken by another app. Change speechRecognitionHotkey in jarvis.settings.json."));
+        }
+    }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        UnregisterHotKey(Handle, VoiceHotkeyId);
+        base.OnHandleDestroyed(e);
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == WmHotkey && m.WParam == VoiceHotkeyId)
+        {
+            if (_context.Speaker.CurrentStatus.IsSpeaking)
+            {
+                _context.Speaker.Interrupt();
+                AddBargeInTimelineEntry("hotkey");
+            }
+
+            _currentVoiceRuntime.ListenForFollowUp();
+        }
+
+        base.WndProc(ref m);
     }
 
     protected override void OnResize(EventArgs e)

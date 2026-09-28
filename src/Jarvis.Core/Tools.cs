@@ -412,7 +412,7 @@ public sealed class ReminderTool : IAssistantTool
         if (reminder is null)
         {
             return new ToolResult(
-                "Usage: remind me to <task> at <time>, remind me to <task> tomorrow at <time>, or remind me to <task> in <number> minutes/hours/days.",
+                "When should I remind you, and about what? For example: remind me to call Sam at 5, or remind me to stretch in 10 minutes.",
                 Succeeded: false,
                 VerificationText: "The reminder request could not be parsed into a date and task.",
                 SummaryText: "Reminder parsing failed.");

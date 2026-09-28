@@ -121,7 +121,10 @@ public static partial class CalendarText
 
     private static readonly Regex BareColorRegex = new($@"^\s*(?<c>{ColorWords})\s*$", RegexOptions.IgnoreCase);
 
-    private const string TimeToken = @"(?:\d{1,2}(?::\d{2})?\s*(?:[ap]\.?\s?m\.?)?|noon|midnight)";
+    // Whisper writes "3:30" as "3.30", which the app's punctuation cleanup can turn into "3. 30".
+    private const string Minutes = @"(?:[:.]\s?\d{2})";
+
+    private const string TimeToken = $@"(?:\d{{1,2}}{Minutes}?\s*(?:[ap]\.?\s?m\.?)?|noon|midnight)";
 
     // The trailing (?![\w/:]) keeps "at 3rd street" and "at 3/28" from reading as a time.
     private static readonly Regex TimeRangeRegex = new(
@@ -131,7 +134,7 @@ public static partial class CalendarText
     private static readonly Regex AtTimeRegex = new($@"\bat\s+(?<s>{TimeToken})(?![\w/:])", RegexOptions.IgnoreCase);
 
     // "3pm" or "3:30 p.m." said without "at".
-    private static readonly Regex MeridiemTimeRegex = new(@"\b(?<s>\d{1,2}(?::\d{2})?\s*[ap]\.?\s?m\.?)(?![\w/:])", RegexOptions.IgnoreCase);
+    private static readonly Regex MeridiemTimeRegex = new($@"\b(?<s>\d{{1,2}}{Minutes}?\s*[ap]\.?\s?m\.?)(?![\w/:])", RegexOptions.IgnoreCase);
 
     private static readonly Regex BareTimeRegex = new($@"^\s*(?<s>{TimeToken})\s*(?:(?:-|to)\s*(?<e>{TimeToken})\s*)?$", RegexOptions.IgnoreCase);
 
@@ -240,6 +243,13 @@ public static partial class CalendarText
         day = parsed ?? default;
         // Only a date, plus harmless filler ("for", "on"), may be left over.
         return parsed is not null && Regex.IsMatch(value, @"^[\s,.?!]*(?:(?:for|on|my|calendar|schedule)[\s,.?!]*)*$", RegexOptions.IgnoreCase);
+    }
+
+    /// <summary>Takes the time and date out of the text ("call mom at 3.30 tomorrow" leaves "call mom").</summary>
+    public static (DateOnly? Date, TimeOnly? Time) ExtractWhen(ref string text, DateTime now)
+    {
+        var time = ExtractTime(ref text, bare: false);
+        return (ExtractDate(ref text, now), time?.Start);
     }
 
     /// <summary>Any date mentioned in the text ("what's on my calendar for friday"), or null.</summary>
@@ -370,7 +380,7 @@ public static partial class CalendarText
     // "from 3 to 4pm": a start without am/pm borrows the end's.
     private static TimeOnly? ParseTime(string token, string? rangeEndToken)
     {
-        var value = token.Trim().ToLowerInvariant().Replace(".", string.Empty).Replace(" ", string.Empty);
+        var value = Regex.Replace(token.Trim().ToLowerInvariant(), @"(?<=\d)\.\s?(?=\d)", ":").Replace(".", string.Empty).Replace(" ", string.Empty);
 
         if (value == "noon")
         {

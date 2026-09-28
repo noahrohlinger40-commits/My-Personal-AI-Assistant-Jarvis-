@@ -70,13 +70,13 @@
   "speechRecognitionSilenceDurationMilliseconds": 850,
   "speechRecognitionPreRollMilliseconds": 450,
   "speechRecognitionMinimumUtteranceMilliseconds": 180,
-  "speechRecognitionDeviceName": "Microphone Array (Intel\u00AE Smart ",
+  "speechRecognitionDeviceName": "Microphone (Razer USB Sound Car",
   "speechRecognitionPushToTalkEnabled": false,
   "speechRecognitionHotkeyEnabled": true,
   "speechRecognitionHotkey": "Control\u002BSpace",
   "speechRecognitionNoiseSuppressionEnabled": true,
   "speechRecognitionEchoCancellationEnabled": true,
-  "speechRecognitionBargeInEnabled": true,
+  "speechRecognitionBargeInEnabled": false,
   "speechRecognitionBeamformingEnabled": true,
   "speechRecognitionBeamformingProfile": "desktop",
   "speechRecognitionHardwareDspProfile": "auto",
@@ -143,11 +143,26 @@
       "notes": "ambient 0.1%, speech 32.3%, peak 91.2%"
     },
     {
+      "deviceName": "Microphone (Razer USB Sound Car",
+      "capturedUtc": "2026-09-28T23:06:31.6736984+00:00",
+      "ambientRmsLevel": 0.0015,
+      "speechRmsLevel": 0.017273895085287257,
+      "speechPeakLevel": 0.071201171875,
+      "recommendedVoiceActivityThreshold": 0.005182168525586177,
+      "recommendedInputGainCap": 4.8,
+      "recommendedTargetPeakLevel": 0.42,
+      "preferredBeamformingProfile": "desktop",
+      "hardwareDspProfileName": "voice-processing",
+      "vendorDspProfileName": "",
+      "vendorDspProfilePath": "",
+      "notes": "ambient 0.0%, speech 1.7%, peak 7.1%"
+    },
+    {
       "deviceName": "Microphone Array (Intel\u00AE Smart",
-      "capturedUtc": "2026-09-27T07:12:55.4699937+00:00",
-      "ambientRmsLevel": 0.011904997981329466,
-      "speechRmsLevel": 0.1780786724956245,
-      "speechPeakLevel": 0.503265380859375,
+      "capturedUtc": "2026-09-28T00:06:19.9931777+00:00",
+      "ambientRmsLevel": 0.1,
+      "speechRmsLevel": 0.12031127693707314,
+      "speechPeakLevel": 0.54428466796875,
       "recommendedVoiceActivityThreshold": 0.04,
       "recommendedInputGainCap": 1.25,
       "recommendedTargetPeakLevel": 0.3,
@@ -155,7 +170,7 @@
       "hardwareDspProfileName": "voice-processing",
       "vendorDspProfileName": "",
       "vendorDspProfilePath": "",
-      "notes": "ambient 1.2%, speech 17.8%, peak 50.3%"
+      "notes": "ambient 22.2%, speech 12.0%, peak 54.4%"
     }
   ],
   "speechRecognitionValidationProfiles": [
